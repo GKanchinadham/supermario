@@ -62,3 +62,4 @@ tenant: superm
 ---
 Created: 2026-01-07
 
+# Trigger re-run with secrets configured
