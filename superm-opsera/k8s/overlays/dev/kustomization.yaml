@@ -12,8 +12,8 @@ resources:
 
 images:
   - name: superm-backend
-    newName: PLACEHOLDER.dkr.ecr.eu-west-2.amazonaws.com/superm-backend
-    newTag: latest
+    newName: 792373136340.dkr.ecr.eu-west-2.amazonaws.com/superm-backend
+    newTag: fcd1575
 
 replicas:
   - name: superm-backend
