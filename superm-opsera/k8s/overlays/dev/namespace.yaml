@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: superm-dev
+  labels:
+    app-identifier: superm
+    environment: dev
+    managed-by: opsera-gitops
+

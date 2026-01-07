@@ -1,0 +1,190 @@
+name: SuperM Build & Deploy
+
+on:
+  push:
+    branches:
+      - superm-opsera
+    paths:
+      - 'app.py'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - 'templates/**'
+      - 'superm-opsera/k8s/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: eu-west-2
+  APP_IDENTIFIER: superm
+  ENVIRONMENT: dev
+  TENANT: superm
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get AWS Account ID and set variables
+        id: vars
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "aws_account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "image_tag=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+          echo "ecr_registry=${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
+
+      - name: Create ECR repository if not exists
+        run: |
+          aws ecr describe-repositories --repository-names ${{ env.APP_IDENTIFIER }}-backend --region ${{ env.AWS_REGION }} 2>/dev/null || \
+            aws ecr create-repository --repository-name ${{ env.APP_IDENTIFIER }}-backend --region ${{ env.AWS_REGION }} \
+              --tags Key=app-identifier,Value=${{ env.APP_IDENTIFIER }} Key=environment,Value=${{ env.ENVIRONMENT }} Key=managed-by,Value=opsera-gitops
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.vars.outputs.ecr_registry }}
+
+      - name: Build and push Docker image
+        run: |
+          docker build --platform linux/amd64 -t ${{ steps.vars.outputs.ecr_registry }}/${{ env.APP_IDENTIFIER }}-backend:${{ steps.vars.outputs.image_tag }} .
+          docker push ${{ steps.vars.outputs.ecr_registry }}/${{ env.APP_IDENTIFIER }}-backend:${{ steps.vars.outputs.image_tag }}
+          
+          # Also tag as latest
+          docker tag ${{ steps.vars.outputs.ecr_registry }}/${{ env.APP_IDENTIFIER }}-backend:${{ steps.vars.outputs.image_tag }} \
+                     ${{ steps.vars.outputs.ecr_registry }}/${{ env.APP_IDENTIFIER }}-backend:latest
+          docker push ${{ steps.vars.outputs.ecr_registry }}/${{ env.APP_IDENTIFIER }}-backend:latest
+
+  update-manifests:
+    name: Update K8s Manifests
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get AWS Account ID
+        id: vars
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "aws_account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "ecr_registry=${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
+
+      - name: Update kustomization with new image
+        run: |
+          cd superm-opsera/k8s/overlays/${{ env.ENVIRONMENT }}
+          
+          # Update image in kustomization.yaml
+          sed -i "s|newName: .*/${{ env.APP_IDENTIFIER }}-backend|newName: ${{ steps.vars.outputs.ecr_registry }}/${{ env.APP_IDENTIFIER }}-backend|" kustomization.yaml
+          sed -i "s|newTag: .*|newTag: ${{ needs.build-and-push.outputs.image_tag }}|" kustomization.yaml
+          
+          cat kustomization.yaml
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --staged --quiet || git commit -m "chore: update image tag to ${{ needs.build-and-push.outputs.image_tag }} [skip ci]"
+          git pull --rebase origin superm-opsera || true
+          git push origin superm-opsera
+
+  deploy-to-cluster:
+    name: Deploy to EKS Cluster
+    runs-on: ubuntu-latest
+    needs: [build-and-push, update-manifests]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: superm-opsera
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check if EKS cluster exists
+        id: cluster-check
+        run: |
+          if aws eks describe-cluster --name ${{ env.APP_IDENTIFIER }}-argocd --region ${{ env.AWS_REGION }} 2>/dev/null; then
+            echo "cluster_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "cluster_exists=false" >> $GITHUB_OUTPUT
+            echo "WARNING: EKS cluster not found. Run infrastructure workflow first."
+          fi
+
+      - name: Configure kubectl
+        if: steps.cluster-check.outputs.cluster_exists == 'true'
+        run: |
+          aws eks update-kubeconfig --name ${{ env.APP_IDENTIFIER }}-argocd --region ${{ env.AWS_REGION }}
+
+      - name: Deploy with Kustomize
+        if: steps.cluster-check.outputs.cluster_exists == 'true'
+        run: |
+          kubectl apply -k superm-opsera/k8s/overlays/${{ env.ENVIRONMENT }}
+          kubectl rollout status deployment/${{ env.APP_IDENTIFIER }}-backend -n ${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }} --timeout=300s || true
+
+      - name: Get service endpoint
+        if: steps.cluster-check.outputs.cluster_exists == 'true'
+        run: |
+          echo "=== Service Status ==="
+          kubectl get svc -n ${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }}
+          echo ""
+          echo "=== Pod Status ==="
+          kubectl get pods -n ${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }}
+
+  verify-endpoint:
+    name: Verify Endpoint
+    runs-on: ubuntu-latest
+    needs: deploy-to-cluster
+    timeout-minutes: 10
+
+    steps:
+      - name: Wait for endpoint
+        run: |
+          ENDPOINT="https://${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }}.agents.opsera-labs.com"
+          echo "Checking endpoint: $ENDPOINT"
+          
+          for i in {1..20}; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "$ENDPOINT" 2>/dev/null || echo "000")
+            echo "Attempt $i/20: HTTP Status = $HTTP_STATUS"
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo ""
+              echo "========================================="
+              echo "ENDPOINT VERIFIED: $ENDPOINT"
+              echo "========================================="
+              exit 0
+            fi
+            sleep 15
+          done
+          
+          echo "WARNING: Endpoint not yet responding (may still be provisioning)"
+          exit 0
+

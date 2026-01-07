@@ -1,0 +1,13 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+*.tfplan
+crash.log
+
+# Credentials (never commit)
+*.pem
+*.key
+credentials.json
+

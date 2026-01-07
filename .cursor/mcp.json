@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "opsera": {
+      "type": "streamable-http",
+      "url": "https://mcpserver-dev.agents.opsera-labs.com/mcp",
+      "headers": {
+        "Authorization": "Bearer opsera_0189ed4fab1b4dced791fa3d31f8b0aa5defa457c48b86a4"
+      }
+    }
+  }
+}
