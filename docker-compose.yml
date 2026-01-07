@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  supermario-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supermario-task-tracker
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - FLASK_DEBUG=false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Development service with hot reload
+  supermario-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supermario-dev
+    ports:
+      - "5001:5000"
+    environment:
+      - PORT=5000
+      - FLASK_DEBUG=true
+    volumes:
+      - .:/app
+    command: ["python", "app.py"]
+    profiles:
+      - dev
+
+
+

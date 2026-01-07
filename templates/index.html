@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Super Mario Task Tracker 🍄</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --mario-red: #E52521;
+            --mario-blue: #049CD8;
+            --mario-yellow: #FBD000;
+            --mario-green: #43B047;
+            --brick-orange: #C84C0C;
+            --sky-gradient: linear-gradient(180deg, #5C94FC 0%, #87CEEB 50%, #B8E0FF 100%);
+            --card-bg: rgba(255, 255, 255, 0.95);
+            --shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--sky-gradient);
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        /* Animated clouds */
+        .clouds {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+        }
+
+        .cloud {
+            position: absolute;
+            background: white;
+            border-radius: 50%;
+            animation: float-cloud linear infinite;
+            opacity: 0.9;
+        }
+
+        .cloud::before, .cloud::after {
+            content: '';
+            position: absolute;
+            background: white;
+            border-radius: 50%;
+        }
+
+        .cloud-1 {
+            width: 100px;
+            height: 40px;
+            top: 10%;
+            animation-duration: 35s;
+        }
+        .cloud-1::before { width: 50px; height: 50px; top: -25px; left: 15px; }
+        .cloud-1::after { width: 35px; height: 35px; top: -15px; left: 55px; }
+
+        .cloud-2 {
+            width: 80px;
+            height: 32px;
+            top: 25%;
+            animation-duration: 45s;
+            animation-delay: -20s;
+        }
+        .cloud-2::before { width: 40px; height: 40px; top: -20px; left: 12px; }
+        .cloud-2::after { width: 28px; height: 28px; top: -12px; left: 44px; }
+
+        .cloud-3 {
+            width: 120px;
+            height: 48px;
+            top: 5%;
+            animation-duration: 55s;
+            animation-delay: -10s;
+        }
+        .cloud-3::before { width: 60px; height: 60px; top: -30px; left: 18px; }
+        .cloud-3::after { width: 42px; height: 42px; top: -18px; left: 66px; }
+
+        @keyframes float-cloud {
+            from { left: -200px; }
+            to { left: 100vw; }
+        }
+
+        /* Ground blocks */
+        .ground {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 60px;
+            background: repeating-linear-gradient(
+                90deg,
+                var(--brick-orange) 0px,
+                var(--brick-orange) 58px,
+                #8B3500 58px,
+                #8B3500 60px
+            );
+            z-index: 1;
+        }
+
+        .ground::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: var(--mario-green);
+        }
+
+        /* Main container */
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 40px 20px 100px;
+            position: relative;
+            z-index: 2;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .logo {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 1.2rem;
+            color: var(--mario-red);
+            text-shadow: 
+                3px 3px 0 var(--mario-yellow),
+                -1px -1px 0 #000,
+                1px -1px 0 #000,
+                -1px 1px 0 #000,
+                1px 1px 0 #000;
+            margin-bottom: 10px;
+            letter-spacing: 2px;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: #333;
+            font-weight: 600;
+        }
+
+        /* Question block styled input */
+        .input-section {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: var(--shadow);
+            margin-bottom: 24px;
+            border: 4px solid var(--mario-yellow);
+            position: relative;
+        }
+
+        .input-section::before {
+            content: '?';
+            position: absolute;
+            top: -15px;
+            right: 20px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 1.5rem;
+            color: var(--brick-orange);
+            text-shadow: 2px 2px 0 var(--mario-yellow);
+        }
+
+        .input-group {
+            display: flex;
+            gap: 12px;
+        }
+
+        .task-input {
+            flex: 1;
+            padding: 16px 20px;
+            font-size: 1rem;
+            font-family: 'Outfit', sans-serif;
+            border: 3px solid #ddd;
+            border-radius: 12px;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        .task-input:focus {
+            border-color: var(--mario-blue);
+            box-shadow: 0 0 0 4px rgba(4, 156, 216, 0.2);
+        }
+
+        .add-btn {
+            padding: 16px 28px;
+            background: var(--mario-red);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 700;
+            font-family: 'Outfit', sans-serif;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .add-btn:hover {
+            background: #c91f1b;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(229, 37, 33, 0.4);
+        }
+
+        .add-btn:active {
+            transform: translateY(0);
+        }
+
+        /* Task list */
+        .task-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .task-item {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: var(--shadow);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            transition: all 0.3s ease;
+            animation: pop-in 0.3s ease;
+            border-left: 5px solid var(--mario-blue);
+        }
+
+        .task-item:hover {
+            transform: translateX(4px);
+        }
+
+        .task-item.completed {
+            border-left-color: var(--mario-green);
+            opacity: 0.7;
+        }
+
+        .task-item.completed .task-title {
+            text-decoration: line-through;
+            color: #888;
+        }
+
+        @keyframes pop-in {
+            0% { opacity: 0; transform: scale(0.8) translateY(-10px); }
+            100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        .checkbox {
+            width: 28px;
+            height: 28px;
+            border: 3px solid var(--mario-blue);
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .checkbox:hover {
+            background: rgba(4, 156, 216, 0.1);
+        }
+
+        .task-item.completed .checkbox {
+            background: var(--mario-green);
+            border-color: var(--mario-green);
+        }
+
+        .checkbox::after {
+            content: '★';
+            font-size: 16px;
+            color: white;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .task-item.completed .checkbox::after {
+            opacity: 1;
+        }
+
+        .task-content {
+            flex: 1;
+        }
+
+        .task-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .task-date {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .delete-btn {
+            width: 36px;
+            height: 36px;
+            background: transparent;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+            color: #888;
+            font-size: 1.2rem;
+        }
+
+        .delete-btn:hover {
+            background: var(--mario-red);
+            border-color: var(--mario-red);
+            color: white;
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+
+        .empty-state .mushroom {
+            font-size: 4rem;
+            margin-bottom: 16px;
+            animation: bounce 1s ease infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+
+        .stat-item {
+            background: var(--card-bg);
+            padding: 16px 24px;
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            text-align: center;
+        }
+
+        .stat-number {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 1.5rem;
+            color: var(--mario-red);
+        }
+
+        .stat-label {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        /* Coin animation */
+        .coin {
+            position: fixed;
+            pointer-events: none;
+            font-size: 2rem;
+            animation: coin-fly 0.8s ease-out forwards;
+            z-index: 100;
+        }
+
+        @keyframes coin-fly {
+            0% { opacity: 1; transform: translateY(0) rotate(0deg); }
+            100% { opacity: 0; transform: translateY(-100px) rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="clouds">
+        <div class="cloud cloud-1"></div>
+        <div class="cloud cloud-2"></div>
+        <div class="cloud cloud-3"></div>
+    </div>
+    
+    <div class="ground"></div>
+    
+    <div class="container">
+        <div class="header">
+            <h1 class="logo">SUPER MARIO</h1>
+            <p class="subtitle">Task Tracker 🍄</p>
+        </div>
+
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-number" id="total-count">0</div>
+                <div class="stat-label">Total Quests</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number" id="completed-count">0</div>
+                <div class="stat-label">Completed</div>
+            </div>
+        </div>
+
+        <div class="input-section">
+            <div class="input-group">
+                <input type="text" class="task-input" id="task-input" placeholder="Add a new quest..." maxlength="100">
+                <button class="add-btn" id="add-btn">Add</button>
+            </div>
+        </div>
+
+        <div class="task-list" id="task-list"></div>
+    </div>
+
+    <script>
+        const taskInput = document.getElementById('task-input');
+        const addBtn = document.getElementById('add-btn');
+        const taskList = document.getElementById('task-list');
+        const totalCount = document.getElementById('total-count');
+        const completedCount = document.getElementById('completed-count');
+
+        // Load tasks on page load
+        loadTasks();
+
+        // Add task on button click
+        addBtn.addEventListener('click', addTask);
+
+        // Add task on Enter key
+        taskInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') addTask();
+        });
+
+        async function loadTasks() {
+            try {
+                const response = await fetch('/api/tasks');
+                const tasks = await response.json();
+                renderTasks(tasks);
+            } catch (error) {
+                console.error('Error loading tasks:', error);
+            }
+        }
+
+        async function addTask() {
+            const title = taskInput.value.trim();
+            if (!title) return;
+
+            try {
+                const response = await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title })
+                });
+
+                if (response.ok) {
+                    taskInput.value = '';
+                    spawnCoin(addBtn);
+                    loadTasks();
+                }
+            } catch (error) {
+                console.error('Error adding task:', error);
+            }
+        }
+
+        async function toggleTask(id) {
+            try {
+                await fetch(`/api/tasks/${id}`, { method: 'PUT' });
+                loadTasks();
+            } catch (error) {
+                console.error('Error toggling task:', error);
+            }
+        }
+
+        async function deleteTask(id) {
+            try {
+                await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+                loadTasks();
+            } catch (error) {
+                console.error('Error deleting task:', error);
+            }
+        }
+
+        function renderTasks(tasks) {
+            totalCount.textContent = tasks.length;
+            completedCount.textContent = tasks.filter(t => t.completed).length;
+
+            if (tasks.length === 0) {
+                taskList.innerHTML = `
+                    <div class="empty-state">
+                        <div class="mushroom">🍄</div>
+                        <p>No quests yet! Add your first adventure.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            taskList.innerHTML = tasks.map(task => `
+                <div class="task-item ${task.completed ? 'completed' : ''}" data-id="${task.id}">
+                    <div class="checkbox" onclick="toggleTask(${task.id})"></div>
+                    <div class="task-content">
+                        <div class="task-title">${escapeHtml(task.title)}</div>
+                        <div class="task-date">Created: ${task.created_at}</div>
+                    </div>
+                    <button class="delete-btn" onclick="deleteTask(${task.id})">×</button>
+                </div>
+            `).join('');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function spawnCoin(element) {
+            const rect = element.getBoundingClientRect();
+            const coin = document.createElement('div');
+            coin.className = 'coin';
+            coin.textContent = '🪙';
+            coin.style.left = rect.left + rect.width / 2 + 'px';
+            coin.style.top = rect.top + 'px';
+            document.body.appendChild(coin);
+            setTimeout(() => coin.remove(), 800);
+        }
+    </script>
+</body>
+</html>
+
+
+
