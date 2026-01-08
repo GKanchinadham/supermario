@@ -160,6 +160,51 @@ jobs:
           echo "=== Pod Status ==="
           kubectl get pods -n ${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }}
 
+      - name: Create Route53 DNS Record (Fix 55)
+        if: steps.cluster-check.outputs.cluster_exists == 'true'
+        run: |
+          echo "Creating Route53 DNS record for ${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }}.agents.opsera-labs.com"
+          
+          # Wait for LoadBalancer to get hostname
+          for i in {1..30}; do
+            LB_HOSTNAME=$(kubectl get svc ${{ env.APP_IDENTIFIER }}-backend -n ${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$LB_HOSTNAME" ]; then
+              echo "LoadBalancer hostname: $LB_HOSTNAME"
+              break
+            fi
+            echo "Waiting for LoadBalancer... attempt $i/30"
+            sleep 10
+          done
+          
+          if [ -z "$LB_HOSTNAME" ]; then
+            echo "WARNING: LoadBalancer hostname not available yet"
+            exit 0
+          fi
+          
+          # NLB Hosted Zone ID for eu-west-2
+          NLB_ZONE_ID="Z2IFOLAFXWLO4F"
+          HOSTED_ZONE_ID="Z00814191D1XSXELJVTKT"
+          
+          # Create A record with alias to NLB
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id $HOSTED_ZONE_ID \
+            --change-batch '{
+              "Changes": [{
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }}.agents.opsera-labs.com",
+                  "Type": "A",
+                  "AliasTarget": {
+                    "HostedZoneId": "'$NLB_ZONE_ID'",
+                    "DNSName": "'$LB_HOSTNAME'",
+                    "EvaluateTargetHealth": true
+                  }
+                }
+              }]
+            }'
+          
+          echo "DNS record created successfully!"
+
   verify-endpoint:
     name: Verify Endpoint
     runs-on: ubuntu-latest
