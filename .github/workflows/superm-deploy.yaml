@@ -181,11 +181,12 @@ jobs:
             exit 0
           fi
           
-          # NLB Hosted Zone ID for eu-west-2
-          NLB_ZONE_ID="Z2IFOLAFXWLO4F"
+          # Classic ELB Hosted Zone ID for eu-west-2
+          # See: https://docs.aws.amazon.com/general/latest/gr/elb.html
+          ELB_ZONE_ID="Z3AADJGX6KTTL2"
           HOSTED_ZONE_ID="Z00814191D1XSXELJVTKT"
           
-          # Create A record with alias to NLB
+          # Create A record with alias to ELB
           aws route53 change-resource-record-sets \
             --hosted-zone-id $HOSTED_ZONE_ID \
             --change-batch '{
@@ -195,7 +196,7 @@ jobs:
                   "Name": "${{ env.APP_IDENTIFIER }}-${{ env.ENVIRONMENT }}.agents.opsera-labs.com",
                   "Type": "A",
                   "AliasTarget": {
-                    "HostedZoneId": "'$NLB_ZONE_ID'",
+                    "HostedZoneId": "'$ELB_ZONE_ID'",
                     "DNSName": "'$LB_HOSTNAME'",
                     "EvaluateTargetHealth": true
                   }
