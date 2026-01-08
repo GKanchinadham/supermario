@@ -13,7 +13,7 @@ resources:
 images:
   - name: superm-backend
     newName: 792373136340.dkr.ecr.eu-west-2.amazonaws.com/superm-backend
-    newTag: 8cb291e
+    newTag: 900b4f0
 
 replicas:
   - name: superm-backend
