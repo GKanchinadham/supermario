@@ -522,12 +522,14 @@ jobs:
           git push origin opsera-deployment-config
 
       - name: Configure kubectl
+        if: needs.discover.outputs.workload_exists == 'true'
         run: |
           aws eks update-kubeconfig \
             --name ${{ needs.discover.outputs.workload_cluster }} \
             --region ${{ env.APP_REGION }}
 
       - name: Wait for ArgoCD Sync
+        if: needs.discover.outputs.workload_exists == 'true'
         run: |
           echo "Waiting for ArgoCD to sync..."
           sleep 30
@@ -538,6 +540,7 @@ jobs:
             --timeout=300s || true
 
       - name: Verify Deployment
+        if: needs.discover.outputs.workload_exists == 'true'
         run: |
           echo "========================================"
           echo "🚀 DEPLOYMENT VERIFICATION"
@@ -549,9 +552,34 @@ jobs:
           # Get pod health
           kubectl get pods -n ${{ needs.discover.outputs.namespace }} -l app=${{ env.APP_NAME }} -o jsonpath='{.items[*].status.phase}'
 
+      - name: Greenfield Notice
+        if: needs.discover.outputs.workload_exists == 'false'
+        run: |
+          echo "========================================"
+          echo "⚠️  GREENFIELD DEPLOYMENT"
+          echo "========================================"
+          echo ""
+          echo "The EKS cluster does not exist yet."
+          echo "K8s manifests have been updated with the new image."
+          echo ""
+          echo "Next Steps to complete deployment:"
+          echo "1. Create EKS cluster using Terraform:"
+          echo "   cd terraform && terraform init && terraform apply"
+          echo ""
+          echo "2. Install ArgoCD on the cluster"
+          echo "3. ArgoCD will automatically sync the deployment"
+          echo ""
+          echo "Cluster: ${{ needs.discover.outputs.workload_cluster }}"
+          echo "Region:  ${{ env.APP_REGION }}"
+          echo "Image:   ${{ needs.build.outputs.full_image }}"
+
       - name: Deployment Summary
         run: |
-          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.discover.outputs.workload_exists }}" == "true" ]; then
+            echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ⚠️ GREENFIELD - Manifests Updated (Cluster Not Found)" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
@@ -562,3 +590,10 @@ jobs:
           echo "| Namespace | \`${{ needs.discover.outputs.namespace }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${{ needs.build.outputs.full_image }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Type | \`${{ needs.discover.outputs.deployment_type }}\` |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.discover.outputs.workload_exists }}" == "false" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+            echo "1. Create EKS cluster: \`cd terraform && terraform apply\`" >> $GITHUB_STEP_SUMMARY
+            echo "2. Install ArgoCD on cluster" >> $GITHUB_STEP_SUMMARY
+            echo "3. ArgoCD will auto-sync the deployment" >> $GITHUB_STEP_SUMMARY
+          fi
