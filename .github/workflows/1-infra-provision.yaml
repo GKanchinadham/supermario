@@ -117,7 +117,7 @@ jobs:
           metadata:
             name: ${CLUSTER_NAME}
             region: ${{ env.APP_REGION }}
-            version: "1.28"
+            version: "1.30"
           
           managedNodeGroups:
             - name: workers
