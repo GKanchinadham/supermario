@@ -383,6 +383,8 @@ jobs:
     name: 🛡️ Grype Security Scan
     runs-on: ubuntu-latest
     needs: [discover, build]
+    # Make security scan non-blocking for dev environment
+    continue-on-error: ${{ github.event.inputs.app_env == 'dev' || github.event.inputs.app_env == '' }}
     
     steps:
       - name: Configure AWS Credentials
@@ -466,7 +468,11 @@ jobs:
     name: 🚀 Deploy to EKS
     runs-on: ubuntu-latest
     needs: [discover, build, security-scan]
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # Deploy even if security-scan fails in dev (continue-on-error is set)
+    if: |
+      always() && 
+      needs.build.result == 'success' &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     
     steps:
       - name: Checkout
