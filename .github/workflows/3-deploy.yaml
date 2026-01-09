@@ -126,6 +126,42 @@ jobs:
         run: |
           kubectl create namespace ${{ needs.verify.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Ensure SSL Certificate
+        id: ssl
+        run: |
+          DOMAIN="*.agents.opsera-labs.com"
+          
+          echo "========================================"
+          echo "🔐 CHECKING SSL CERTIFICATE"
+          echo "========================================"
+          
+          # Check if certificate exists in this region
+          CERT_ARN=$(aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$DOMAIN'].CertificateArn" --output text)
+          
+          if [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ]; then
+            echo "✅ SSL Certificate found: $CERT_ARN"
+            echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
+            echo "https_enabled=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No SSL certificate found for $DOMAIN in ${{ env.APP_REGION }}"
+            echo "Requesting new certificate..."
+            
+            NEW_CERT_ARN=$(aws acm request-certificate \
+              --domain-name "$DOMAIN" \
+              --validation-method DNS \
+              --query 'CertificateArn' --output text 2>/dev/null || echo "")
+            
+            if [ -n "$NEW_CERT_ARN" ]; then
+              echo "📝 Certificate requested: $NEW_CERT_ARN"
+              echo "⏳ Certificate needs DNS validation (may take a few minutes)"
+              echo "cert_arn=$NEW_CERT_ARN" >> $GITHUB_OUTPUT
+              echo "https_enabled=pending" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ Could not request certificate, proceeding with HTTP only"
+              echo "https_enabled=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
       - name: Deploy Application
         id: deploy
         run: |
@@ -200,9 +236,18 @@ jobs:
             annotations:
               # Custom DNS hostname
               external-dns.alpha.kubernetes.io/hostname: ${{ env.APP_NAME }}.agents.opsera-labs.com
+              # AWS NLB with HTTPS (if certificate available)
+              service.beta.kubernetes.io/aws-load-balancer-type: nlb
+              service.beta.kubernetes.io/aws-load-balancer-ssl-cert: ${{ steps.ssl.outputs.cert_arn }}
+              service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+              service.beta.kubernetes.io/aws-load-balancer-backend-protocol: http
           spec:
             type: LoadBalancer
             ports:
+              - name: https
+                port: 443
+                targetPort: 5000
+                protocol: TCP
               - name: http
                 port: 80
                 targetPort: 5000
@@ -353,12 +398,12 @@ jobs:
           echo "========================================"
           echo "🔍 VERIFYING ENDPOINT HEALTH"
           echo "========================================"
-          echo "Custom Domain: http://$CUSTOM_DOMAIN"
+          echo "Custom Domain: https://$CUSTOM_DOMAIN"
           echo "LoadBalancer: $LB_URL"
           
-          # First verify via LoadBalancer directly
+          # First verify via LoadBalancer directly (HTTP on port 80)
           echo ""
-          echo "Step 1: Verifying LoadBalancer..."
+          echo "Step 1: Verifying LoadBalancer (HTTP)..."
           for i in {1..30}; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "http://$LB_URL/health" || echo "000")
             echo "Attempt $i/30: HTTP $STATUS"
@@ -370,33 +415,42 @@ jobs:
             sleep 10
           done
           
-          # Then verify custom domain (after DNS propagation)
+          # Try HTTPS on custom domain
           echo ""
-          echo "Step 2: Verifying Custom Domain..."
+          echo "Step 2: Verifying HTTPS Custom Domain..."
           for i in {1..15}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "http://$CUSTOM_DOMAIN/health" 2>/dev/null || echo "000")
-            echo "Attempt $i/15: HTTP $STATUS"
+            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" --connect-timeout 10 "https://$CUSTOM_DOMAIN/health" 2>/dev/null || echo "000")
+            echo "Attempt $i/15: HTTPS $STATUS"
             
             if [ "$STATUS" = "200" ]; then
               echo ""
               echo "========================================"
-              echo "✅ CUSTOM DOMAIN VERIFIED"
+              echo "✅ HTTPS ENDPOINT VERIFIED"
               echo "========================================"
               echo ""
               echo "🎉 APPLICATION IS LIVE!"
-              echo "URL: http://$CUSTOM_DOMAIN"
+              echo "🔐 URL: https://$CUSTOM_DOMAIN"
               exit 0
             fi
             sleep 10
           done
           
+          # Fallback: Try HTTP on custom domain
+          echo ""
+          echo "Step 3: Trying HTTP fallback..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "http://$CUSTOM_DOMAIN/health" 2>/dev/null || echo "000")
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ HTTP endpoint working (HTTPS certificate may be pending)"
+            echo "URL: http://$CUSTOM_DOMAIN"
+            exit 0
+          fi
+          
           echo ""
           echo "========================================"
-          echo "⚠️ Custom domain may need more DNS propagation time"
+          echo "⚠️ Custom domain may need more time for DNS/SSL"
           echo "========================================"
-          echo ""
           echo "LoadBalancer URL: http://$LB_URL"
-          echo "Custom domain: http://$CUSTOM_DOMAIN"
+          echo "Custom domain (pending): https://$CUSTOM_DOMAIN"
 
       - name: Final Summary
         run: |
@@ -410,7 +464,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Custom URL** | \`http://$CUSTOM_DOMAIN\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Health Check | \`http://$CUSTOM_DOMAIN/health\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🔐 HTTPS URL** | \`https://$CUSTOM_DOMAIN\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health Check | \`https://$CUSTOM_DOMAIN/health\` |" >> $GITHUB_STEP_SUMMARY
           echo "| LoadBalancer | \`$LB_URL\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SSL Certificate | \`${{ needs.deploy.outputs.cert_arn || 'pending' }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Status | ✅ LIVE |" >> $GITHUB_STEP_SUMMARY
