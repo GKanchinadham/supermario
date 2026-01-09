@@ -7,23 +7,23 @@ metadata:
 namespace: luigi-app-dev
 
 resources:
-  - ../../base
-  - namespace.yaml
+- ../../base
+- namespace.yaml
 
 commonLabels:
   environment: dev
 
 patches:
-  - path: deployment-patch.yaml
+- path: deployment-patch.yaml
 
 configMapGenerator:
-  - name: luigi-app-config
-    behavior: merge
-    literals:
-      - FLASK_ENV=development
-      - FLASK_DEBUG=false
+- behavior: merge
+  literals:
+  - FLASK_ENV=development
+  - FLASK_DEBUG=false
+  name: luigi-app-config
 
 images:
-  - name: luigi-app
-    newName: ACCOUNT_ID.dkr.ecr.eu-west-2.amazonaws.com/luigi/luigi-app
-    newTag: latest
+- name: luigi-app
+  newName: 792373136340.dkr.ecr.eu-west-2.amazonaws.com/luigi/luigi-app
+  newTag: 7feeb46cdca383ba1ee3f86aa0889c47f706502a
