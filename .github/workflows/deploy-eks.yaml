@@ -475,10 +475,12 @@ jobs:
       (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     
     steps:
-      - name: Checkout
+      - name: Checkout Deployment Branch
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: opsera-deployment-config
+          fetch-depth: 0
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -489,6 +491,9 @@ jobs:
 
       - name: Update Kustomize Image
         run: |
+          echo "Current branch: $(git branch --show-current)"
+          echo "Updating k8s/overlays/${{ env.APP_ENV }}"
+          
           cd k8s/overlays/${{ env.APP_ENV }}
           
           # Install kustomize
@@ -501,14 +506,14 @@ jobs:
           echo "Updated kustomization.yaml:"
           cat kustomization.yaml
 
-      - name: Commit and Push
+      - name: Commit and Push to Deployment Branch
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
           git add k8s/overlays/${{ env.APP_ENV }}/kustomization.yaml
           git commit -m "🚀 Deploy ${{ env.APP_NAME }} to ${{ env.APP_ENV }} - ${{ github.sha }}" || echo "No changes to commit"
-          git push
+          git push origin opsera-deployment-config
 
       - name: Configure kubectl
         run: |
