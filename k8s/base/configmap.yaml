@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: luigi-app-config
+  labels:
+    app: luigi-app
+    tenant: luigi
+data:
+  FLASK_ENV: "production"

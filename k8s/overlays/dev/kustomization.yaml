@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: luigi-app-dev
+
+namespace: luigi-app-dev
+
+resources:
+  - ../../base
+  - namespace.yaml
+
+commonLabels:
+  environment: dev
+
+patches:
+  - path: deployment-patch.yaml
+
+configMapGenerator:
+  - name: luigi-app-config
+    behavior: merge
+    literals:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=false
+
+images:
+  - name: luigi-app
+    newName: ACCOUNT_ID.dkr.ecr.eu-west-2.amazonaws.com/luigi/luigi-app
+    newTag: latest
