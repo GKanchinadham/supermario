@@ -40,6 +40,12 @@ env:
   APP_ENV: ${{ github.event.inputs.app_env || 'dev' }}
   APP_REGION: ${{ github.event.inputs.app_region || 'eu-west-2' }}
 
+# Required permissions for pushing commits and accessing resources
+permissions:
+  contents: write
+  id-token: write
+  actions: read
+
 jobs:
   # ==========================================
   # Job 1: Infrastructure Discovery
