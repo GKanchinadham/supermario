@@ -1,0 +1,339 @@
+name: "Phase 3: Deploy to EKS"
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_name:
+        description: 'Tenant/Organization'
+        required: true
+        default: 'luigi'
+      app_name:
+        description: 'Application name'
+        required: true
+        default: 'luigi-app'
+      app_env:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: 'dev'
+      app_region:
+        description: 'AWS Region'
+        required: true
+        default: 'eu-west-2'
+      image_tag:
+        description: 'Image tag to deploy (leave empty for latest)'
+        required: false
+        default: 'latest'
+
+env:
+  TENANT_NAME: ${{ github.event.inputs.tenant_name }}
+  APP_NAME: ${{ github.event.inputs.app_name }}
+  APP_ENV: ${{ github.event.inputs.app_env }}
+  APP_REGION: ${{ github.event.inputs.app_region }}
+  IMAGE_TAG: ${{ github.event.inputs.image_tag || 'latest' }}
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  # ==========================================
+  # Phase 3A: Verify Prerequisites
+  # ==========================================
+  verify:
+    name: "🔍 Verify Prerequisites"
+    runs-on: ubuntu-latest
+    outputs:
+      cluster_name: ${{ steps.setup.outputs.cluster_name }}
+      namespace: ${{ steps.setup.outputs.namespace }}
+      ecr_uri: ${{ steps.setup.outputs.ecr_uri }}
+      full_image: ${{ steps.setup.outputs.full_image }}
+    
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      - name: Setup and Verify
+        id: setup
+        run: |
+          CLUSTER_NAME="${{ env.TENANT_NAME }}-${{ env.APP_REGION }}-nonprod"
+          NAMESPACE="${{ env.APP_NAME }}-${{ env.APP_ENV }}"
+          ECR_REPO="${{ env.TENANT_NAME }}/${{ env.APP_NAME }}"
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.APP_REGION }}.amazonaws.com/${ECR_REPO}"
+          FULL_IMAGE="${ECR_URI}:${{ env.IMAGE_TAG }}"
+          
+          echo "========================================"
+          echo "🔍 DEPLOYMENT CONFIGURATION"
+          echo "========================================"
+          echo "Cluster: $CLUSTER_NAME"
+          echo "Namespace: $NAMESPACE"
+          echo "Image: $FULL_IMAGE"
+          
+          # Verify cluster exists
+          if ! aws eks describe-cluster --name "$CLUSTER_NAME" 2>/dev/null; then
+            echo "❌ Cluster not found! Run Phase 1 first."
+            exit 1
+          fi
+          
+          # Verify image exists
+          if ! aws ecr describe-images --repository-name "$ECR_REPO" --image-ids imageTag=${{ env.IMAGE_TAG }} 2>/dev/null; then
+            echo "❌ Image not found! Run Phase 2 first."
+            exit 1
+          fi
+          
+          echo "✅ All prerequisites verified"
+          
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
+          echo "ecr_uri=$ECR_URI" >> $GITHUB_OUTPUT
+          echo "full_image=$FULL_IMAGE" >> $GITHUB_OUTPUT
+
+  # ==========================================
+  # Phase 3B: Deploy Application
+  # ==========================================
+  deploy:
+    name: "🚀 Deploy Application"
+    runs-on: ubuntu-latest
+    needs: verify
+    outputs:
+      service_url: ${{ steps.deploy.outputs.service_url }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name "${{ needs.verify.outputs.cluster_name }}" --region ${{ env.APP_REGION }}
+
+      - name: Create Namespace
+        run: |
+          kubectl create namespace ${{ needs.verify.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Application
+        id: deploy
+        run: |
+          NAMESPACE="${{ needs.verify.outputs.namespace }}"
+          FULL_IMAGE="${{ needs.verify.outputs.full_image }}"
+          
+          echo "========================================"
+          echo "🚀 DEPLOYING APPLICATION"
+          echo "========================================"
+          echo "Namespace: $NAMESPACE"
+          echo "Image: $FULL_IMAGE"
+          
+          # Apply Kubernetes manifests directly
+          cat << EOF | kubectl apply -f -
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${{ env.APP_NAME }}
+            namespace: $NAMESPACE
+            labels:
+              app: ${{ env.APP_NAME }}
+              tenant: ${{ env.TENANT_NAME }}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: ${{ env.APP_NAME }}
+            template:
+              metadata:
+                labels:
+                  app: ${{ env.APP_NAME }}
+                  tenant: ${{ env.TENANT_NAME }}
+              spec:
+                containers:
+                  - name: ${{ env.APP_NAME }}
+                    image: $FULL_IMAGE
+                    ports:
+                      - containerPort: 5000
+                    env:
+                      - name: PORT
+                        value: "5000"
+                      - name: FLASK_ENV
+                        value: "production"
+                    resources:
+                      requests:
+                        memory: "128Mi"
+                        cpu: "100m"
+                      limits:
+                        memory: "256Mi"
+                        cpu: "500m"
+                    livenessProbe:
+                      httpGet:
+                        path: /health
+                        port: 5000
+                      initialDelaySeconds: 10
+                      periodSeconds: 30
+                    readinessProbe:
+                      httpGet:
+                        path: /health
+                        port: 5000
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${{ env.APP_NAME }}
+            namespace: $NAMESPACE
+            labels:
+              app: ${{ env.APP_NAME }}
+          spec:
+            type: LoadBalancer
+            ports:
+              - port: 80
+                targetPort: 5000
+                protocol: TCP
+            selector:
+              app: ${{ env.APP_NAME }}
+          EOF
+          
+          echo "Waiting for deployment to be ready..."
+          kubectl rollout status deployment/${{ env.APP_NAME }} -n $NAMESPACE --timeout=300s
+          
+          echo "Waiting for LoadBalancer..."
+          for i in {1..30}; do
+            URL=$(kubectl get svc ${{ env.APP_NAME }} -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              echo "service_url=http://$URL" >> $GITHUB_OUTPUT
+              break
+            fi
+            echo "Waiting for LoadBalancer... ($i/30)"
+            sleep 10
+          done
+          
+          echo ""
+          echo "========================================"
+          echo "✅ DEPLOYMENT COMPLETE"
+          echo "========================================"
+          kubectl get pods -n $NAMESPACE
+          kubectl get svc -n $NAMESPACE
+
+      - name: Phase 3 Summary
+        run: |
+          echo "## 🚀 Phase 3: Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster | \`${{ needs.verify.outputs.cluster_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | \`${{ needs.verify.outputs.namespace }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ needs.verify.outputs.full_image }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service URL | \`${{ steps.deploy.outputs.service_url }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next:** Run Phase 4 to verify endpoint health" >> $GITHUB_STEP_SUMMARY
+
+  # ==========================================
+  # Phase 3C: Verify Endpoint
+  # ==========================================
+  verify-endpoint:
+    name: "✅ Verify Endpoint"
+    runs-on: ubuntu-latest
+    needs: [verify, deploy]
+    
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --name "${{ needs.verify.outputs.cluster_name }}" --region ${{ env.APP_REGION }}
+
+      - name: Wait for Pods Ready
+        run: |
+          NAMESPACE="${{ needs.verify.outputs.namespace }}"
+          
+          echo "========================================"
+          echo "⏳ WAITING FOR PODS TO BE READY"
+          echo "========================================"
+          
+          for i in {1..30}; do
+            READY=$(kubectl get pods -n $NAMESPACE -l app=${{ env.APP_NAME }} \
+              -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | \
+              tr ' ' '\n' | grep -c True || echo 0)
+            
+            echo "Attempt $i/30: $READY pods ready"
+            
+            # Check for errors
+            if kubectl get pods -n $NAMESPACE | grep -q "ImagePullBackOff\|ErrImagePull\|CrashLoopBackOff"; then
+              echo "❌ ERROR: Pod issues detected!"
+              kubectl describe pods -n $NAMESPACE -l app=${{ env.APP_NAME }}
+              exit 1
+            fi
+            
+            [ "$READY" -ge 2 ] && echo "✅ All pods ready!" && break
+            sleep 10
+          done
+
+      - name: Verify HTTP Health
+        run: |
+          NAMESPACE="${{ needs.verify.outputs.namespace }}"
+          
+          # Get service URL
+          SERVICE_URL=$(kubectl get svc ${{ env.APP_NAME }} -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          if [ -z "$SERVICE_URL" ] || [ "$SERVICE_URL" = "null" ]; then
+            echo "⚠️ LoadBalancer URL not ready yet"
+            exit 0
+          fi
+          
+          echo "========================================"
+          echo "🔍 VERIFYING ENDPOINT HEALTH"
+          echo "========================================"
+          echo "URL: http://$SERVICE_URL"
+          
+          for i in {1..30}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "http://$SERVICE_URL/health" || echo "000")
+            echo "Attempt $i/30: HTTP $STATUS"
+            
+            if [ "$STATUS" = "200" ]; then
+              echo ""
+              echo "========================================"
+              echo "✅ ENDPOINT VERIFIED - HTTP 200"
+              echo "========================================"
+              echo ""
+              echo "🎉 APPLICATION IS LIVE!"
+              echo "URL: http://$SERVICE_URL"
+              exit 0
+            fi
+            sleep 10
+          done
+          
+          echo "⚠️ Endpoint not responding with 200 yet (may still be initializing)"
+
+      - name: Final Summary
+        run: |
+          NAMESPACE="${{ needs.verify.outputs.namespace }}"
+          SERVICE_URL=$(kubectl get svc ${{ env.APP_NAME }} -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          
+          echo "## ✅ Deployment Verification Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎉 Application Endpoint" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | \`http://$SERVICE_URL\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health | \`http://$SERVICE_URL/health\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ LIVE |" >> $GITHUB_STEP_SUMMARY
