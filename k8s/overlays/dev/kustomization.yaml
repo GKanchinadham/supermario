@@ -26,4 +26,4 @@ configMapGenerator:
 images:
 - name: luigi-app
   newName: 792373136340.dkr.ecr.eu-west-2.amazonaws.com/luigi/luigi-app
-  newTag: 96711c605bd3f1d91be8869ac311c1afe778a88f
+  newTag: cc68f0e1b10c96c996e709dddbced233ff0617a3
