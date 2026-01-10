@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: gkorg
+  namespace: argocd
+  labels:
+    tenant: gkorg
+spec:
+  description: "GKOrg tenant project"
+
+  # Source repositories
+  sourceRepos:
+    - '*'
+
+  # Destination clusters and namespaces
+  destinations:
+    - namespace: 'gkorgapp1-*'
+      server: '*'
+    - namespace: 'gkorg-*'
+      server: '*'
+
+  # Cluster resource whitelist
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+
+  # Namespace resource whitelist (allow all)
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+
+  # Orphaned resources monitoring
+  orphanedResources:
+    warn: true

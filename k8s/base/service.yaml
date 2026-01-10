@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gkorgapp1-dev
+  labels:
+    app: gkorgapp1
+    tenant: gkorg
+  annotations:
+    # ExternalDNS will create DNS record automatically
+    external-dns.alpha.kubernetes.io/hostname: gkorgapp1-dev.agents.opsera-labs.com
+    # Learning #101: NLB internet-facing annotations
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    # Learning #135: HTTPS with ACM certificate
+    # NOTE: Replace CERT_ARN with your ACM certificate ARN
+    # service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:us-west-2:ACCOUNT:certificate/CERT-ID
+    # service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    # service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+spec:
+  type: LoadBalancer
+  selector:
+    app: gkorgapp1
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+      protocol: TCP
+    # Uncomment for HTTPS after adding ACM certificate
+    # - name: https
+    #   port: 443
+    #   targetPort: 5000
+    #   protocol: TCP

@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gkorgapp1-dev
+  namespace: argocd
+  labels:
+    app: gkorgapp1
+    tenant: gkorg
+    environment: dev
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/GKanchinadham/supermario.git
+    targetRevision: gkorgapp1-deploy
+    path: k8s/overlays/dev
+
+  destination:
+    # Workload cluster - registered as a cluster secret in ArgoCD
+    server: https://kubernetes.default.svc
+    # For external cluster, use:
+    # server: https://WORKLOAD_CLUSTER_ENDPOINT
+    namespace: gkorgapp1-dev
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # Health checks
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
