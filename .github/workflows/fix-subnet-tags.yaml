@@ -1,0 +1,204 @@
+# Fix subnet tags for LoadBalancer
+name: Fix Subnet Tags
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  VPC_NAME: opsera-vpc
+  CLUSTER_NAME: gkorg-usw2-np
+
+jobs:
+  fix-tags:
+    name: Tag Subnets for ELB
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get VPC and Subnets
+        id: vpc
+        run: |
+          echo "Finding VPC: ${{ env.VPC_NAME }}"
+          
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Name,Values=${{ env.VPC_NAME }}" \
+            --query 'Vpcs[0].VpcId' --output text)
+          
+          echo "VPC ID: $VPC_ID"
+          echo "vpc_id=$VPC_ID" >> $GITHUB_OUTPUT
+          
+          # Get all subnets in the VPC
+          echo ""
+          echo "Current subnets:"
+          aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'Subnets[*].[SubnetId,AvailabilityZone,CidrBlock,MapPublicIpOnLaunch,Tags[?Key==`Name`].Value|[0]]' \
+            --output table
+
+      - name: Tag Public Subnets for Internet-Facing ELB
+        run: |
+          VPC_ID="${{ steps.vpc.outputs.vpc_id }}"
+          
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  TAGGING PUBLIC SUBNETS FOR INTERNET-FACING LOAD BALANCER"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          # Find public subnets (those with MapPublicIpOnLaunch=true or name contains 'public')
+          PUBLIC_SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'Subnets[?MapPublicIpOnLaunch==`true`].SubnetId' \
+            --output text)
+          
+          if [ -z "$PUBLIC_SUBNETS" ]; then
+            echo "No public subnets found by MapPublicIpOnLaunch. Trying by name..."
+            PUBLIC_SUBNETS=$(aws ec2 describe-subnets \
+              --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=*public*" \
+              --query 'Subnets[*].SubnetId' \
+              --output text)
+          fi
+          
+          echo "Public subnets found: $PUBLIC_SUBNETS"
+          
+          for SUBNET_ID in $PUBLIC_SUBNETS; do
+            echo "Tagging subnet: $SUBNET_ID"
+            
+            # Tag for internet-facing ELB
+            aws ec2 create-tags --resources $SUBNET_ID \
+              --tags Key=kubernetes.io/role/elb,Value=1
+            
+            # Tag for cluster
+            aws ec2 create-tags --resources $SUBNET_ID \
+              --tags Key=kubernetes.io/cluster/${{ env.CLUSTER_NAME }},Value=shared
+            
+            echo "  ✅ Tagged $SUBNET_ID"
+          done
+
+      - name: Tag Private Subnets for Internal ELB
+        run: |
+          VPC_ID="${{ steps.vpc.outputs.vpc_id }}"
+          
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  TAGGING PRIVATE SUBNETS FOR INTERNAL LOAD BALANCER"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          # Find private subnets
+          PRIVATE_SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=*private*" \
+            --query 'Subnets[*].SubnetId' \
+            --output text)
+          
+          echo "Private subnets found: $PRIVATE_SUBNETS"
+          
+          for SUBNET_ID in $PRIVATE_SUBNETS; do
+            echo "Tagging subnet: $SUBNET_ID"
+            
+            # Tag for internal ELB
+            aws ec2 create-tags --resources $SUBNET_ID \
+              --tags Key=kubernetes.io/role/internal-elb,Value=1
+            
+            # Tag for cluster
+            aws ec2 create-tags --resources $SUBNET_ID \
+              --tags Key=kubernetes.io/cluster/${{ env.CLUSTER_NAME }},Value=shared
+            
+            echo "  ✅ Tagged $SUBNET_ID"
+          done
+
+      - name: Verify Tags
+        run: |
+          VPC_ID="${{ steps.vpc.outputs.vpc_id }}"
+          
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  VERIFYING SUBNET TAGS"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'Subnets[*].[SubnetId,Tags[?Key==`kubernetes.io/role/elb`].Value|[0],Tags[?Key==`kubernetes.io/role/internal-elb`].Value|[0]]' \
+            --output table
+
+      - name: Restart Service to Trigger LoadBalancer Recreation
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  RESTARTING SERVICE TO RECREATE LOADBALANCER"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          
+          # Delete and recreate the service to trigger new LB creation
+          kubectl delete svc gkorgapp1-dev -n gkorgapp1-dev --ignore-not-found
+          
+          # Reapply the service
+          cat << 'EOF' | kubectl apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: gkorgapp1-dev
+            namespace: gkorgapp1-dev
+            labels:
+              app: gkorgapp1
+              tenant: gkorg
+            annotations:
+              external-dns.alpha.kubernetes.io/hostname: gkorgapp1-dev.agents.opsera-labs.com
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+              service.beta.kubernetes.io/aws-load-balancer-type: nlb
+              service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+          spec:
+            type: LoadBalancer
+            selector:
+              app: gkorgapp1
+            ports:
+              - name: http
+                port: 80
+                targetPort: 5000
+                protocol: TCP
+          EOF
+          
+          echo "Service recreated. Waiting for LoadBalancer..."
+          sleep 30
+          
+          kubectl get svc gkorgapp1-dev -n gkorgapp1-dev
+
+      - name: Wait for LoadBalancer
+        run: |
+          echo ""
+          echo "Waiting for LoadBalancer to be assigned (up to 3 minutes)..."
+          
+          for i in {1..18}; do
+            LB_URL=$(kubectl get svc gkorgapp1-dev -n gkorgapp1-dev -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            if [ -n "$LB_URL" ]; then
+              echo ""
+              echo "════════════════════════════════════════════════════════════════"
+              echo "  🎮 SUCCESS! LOADBALANCER ASSIGNED"
+              echo "════════════════════════════════════════════════════════════════"
+              echo ""
+              echo "  🌐 Application URL: http://$LB_URL"
+              echo ""
+              
+              # Write to summary
+              cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🎮 Super Mario Task Tracker - LIVE!
+          
+          | Property | Value |
+          |----------|-------|
+          | **Application URL** | http://$LB_URL |
+          | **Health Check** | http://$LB_URL/health |
+          EOF
+              exit 0
+            fi
+            echo "  Attempt $i/18 - LoadBalancer pending..."
+            kubectl get events -n gkorgapp1-dev --sort-by='.lastTimestamp' | grep -i loadbalancer | tail -3
+            sleep 10
+          done
+          
+          echo "⚠️ LoadBalancer still pending. Check events:"
+          kubectl get events -n gkorgapp1-dev --sort-by='.lastTimestamp' | tail -10
