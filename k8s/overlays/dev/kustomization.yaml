@@ -18,7 +18,7 @@ images:
     # ECR registry will be prefixed by workflow
     # Format: ACCOUNT.dkr.ecr.REGION.amazonaws.com/gkorg/gkorgapp1
     newName: gkorg/gkorgapp1
-    newTag: latest
+    newTag: 932d99710d423adafaa5aaa0ae936393073b34a4
 
 # Dev environment patches
 patches:
