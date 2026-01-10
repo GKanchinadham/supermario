@@ -1,0 +1,72 @@
+# Get Route53 Nameservers for domain delegation
+name: Get Route53 Nameservers
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  BASE_DOMAIN: opsera-labs.com
+
+jobs:
+  get-ns:
+    name: Get Nameservers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get Hosted Zone Nameservers
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  ROUTE53 HOSTED ZONE NAMESERVERS"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          # Get hosted zone ID
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name "${{ env.BASE_DOMAIN }}" \
+            --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
+          
+          echo "Hosted Zone ID: $ZONE_ID"
+          echo ""
+          
+          # Get nameservers
+          echo "Nameservers for ${{ env.BASE_DOMAIN }}:"
+          echo ""
+          
+          aws route53 get-hosted-zone --id $ZONE_ID \
+            --query 'DelegationSet.NameServers[]' --output text | tr '\t' '\n'
+          
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  📋 DELEGATION INSTRUCTIONS"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "To make your custom URL work, update your domain registrar"
+          echo "(GoDaddy, Namecheap, Route53, etc.) with these nameservers."
+          echo ""
+          
+          NS_SERVERS=$(aws route53 get-hosted-zone --id $ZONE_ID \
+            --query 'DelegationSet.NameServers[]' --output text | tr '\t' '\n')
+          
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🌐 DNS Delegation Required
+          
+          To make your custom URL work, configure these nameservers at your domain registrar:
+          
+          \`\`\`
+          $NS_SERVERS
+          \`\`\`
+          
+          ### Current DNS Records in Route53:
+          EOF
+          
+          echo ""
+          echo "Current DNS records:"
+          aws route53 list-resource-record-sets --hosted-zone-id $ZONE_ID \
+            --query 'ResourceRecordSets[*].[Name,Type,ResourceRecords[0].Value]' \
+            --output table
