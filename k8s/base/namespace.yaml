@@ -1,9 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: gkorgapp1-dev
-  labels:
-    app: gkorgapp1
-    tenant: gkorg
-    environment: dev
-    managed-by: opsera
