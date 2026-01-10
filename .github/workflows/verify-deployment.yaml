@@ -1,0 +1,105 @@
+# Quick verification workflow - checks pod and service status
+name: Verify Deployment Status
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Check Deployment Status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Setup kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Connect to Cluster
+        run: |
+          aws eks update-kubeconfig --name gkorg-usw2-np --region us-west-2
+
+      - name: Check Namespace
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  NAMESPACE STATUS"
+          echo "════════════════════════════════════════════════════════════════"
+          kubectl get namespace gkorgapp1-dev || echo "Namespace not found"
+
+      - name: Check Pods
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  POD STATUS"
+          echo "════════════════════════════════════════════════════════════════"
+          kubectl get pods -n gkorgapp1-dev -o wide || echo "No pods found"
+          echo ""
+          echo "Pod Details:"
+          kubectl describe pods -n gkorgapp1-dev 2>/dev/null | head -100 || echo "No pods to describe"
+
+      - name: Check Services
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  SERVICE STATUS"
+          echo "════════════════════════════════════════════════════════════════"
+          kubectl get svc -n gkorgapp1-dev -o wide || echo "No services found"
+
+      - name: Get LoadBalancer URL
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  LOADBALANCER URL"
+          echo "════════════════════════════════════════════════════════════════"
+          LB_URL=$(kubectl get svc gkorgapp1-dev -n gkorgapp1-dev -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+          if [ -n "$LB_URL" ]; then
+            echo "🌐 Your application is available at:"
+            echo "   http://$LB_URL"
+            echo ""
+            echo "Testing endpoint..."
+            curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" "http://$LB_URL/health" --max-time 10 || echo "Endpoint not responding yet"
+          else
+            echo "⏳ LoadBalancer URL not yet assigned. Check back in a few minutes."
+          fi
+
+      - name: Check Deployments
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  DEPLOYMENT STATUS"
+          echo "════════════════════════════════════════════════════════════════"
+          kubectl get deployments -n gkorgapp1-dev || echo "No deployments found"
+
+      - name: Check Events
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  RECENT EVENTS"
+          echo "════════════════════════════════════════════════════════════════"
+          kubectl get events -n gkorgapp1-dev --sort-by='.lastTimestamp' | tail -20 || echo "No events"
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  📋 DEPLOYMENT SUMMARY"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "  Cluster:    gkorg-usw2-np"
+          echo "  Namespace:  gkorgapp1-dev"
+          echo "  Region:     us-west-2"
+          echo ""
+          
+          # Write to job summary
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## 🎮 GKOrgApp1 Deployment Status
+          
+          | Resource | Status |
+          |----------|--------|
+          | Cluster | gkorg-usw2-np |
+          | Namespace | gkorgapp1-dev |
+          | Region | us-west-2 |
+          
+          Check the logs above for detailed pod, service, and LoadBalancer information.
+          EOF
