@@ -1,0 +1,197 @@
+# Setup Custom DNS with ExternalDNS and Route53
+name: Setup Custom DNS
+
+on:
+  workflow_dispatch:
+    inputs:
+      custom_domain:
+        description: 'Custom domain for the app (e.g., gkorgapp1-dev.agents.opsera-labs.com)'
+        required: true
+        default: 'gkorgapp1-dev.agents.opsera-labs.com'
+
+env:
+  AWS_REGION: us-west-2
+  CLUSTER_NAME: gkorg-usw2-np
+  NAMESPACE: gkorgapp1-dev
+  BASE_DOMAIN: opsera-labs.com
+
+jobs:
+  setup-dns:
+    name: Configure Custom DNS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Tools
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh && ./get_helm.sh
+
+      - name: Connect to Cluster
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Get Route53 Hosted Zone
+        id: route53
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  CHECKING ROUTE53 HOSTED ZONE"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name "${{ env.BASE_DOMAIN }}" \
+            --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
+          
+          if [ "$HOSTED_ZONE_ID" == "None" ] || [ -z "$HOSTED_ZONE_ID" ]; then
+            echo "⚠️ Hosted zone for ${{ env.BASE_DOMAIN }} not found"
+            echo "Creating hosted zone..."
+            
+            RESULT=$(aws route53 create-hosted-zone \
+              --name "${{ env.BASE_DOMAIN }}" \
+              --caller-reference "opsera-$(date +%s)" \
+              --query 'HostedZone.Id' --output text | sed 's|/hostedzone/||')
+            
+            HOSTED_ZONE_ID=$RESULT
+            echo "Created hosted zone: $HOSTED_ZONE_ID"
+          fi
+          
+          echo "Hosted Zone ID: $HOSTED_ZONE_ID"
+          echo "zone_id=$HOSTED_ZONE_ID" >> $GITHUB_OUTPUT
+          
+          # List existing records
+          echo ""
+          echo "Existing DNS records:"
+          aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID \
+            --query 'ResourceRecordSets[*].[Name,Type]' --output table | head -20
+
+      - name: Get LoadBalancer URL
+        id: lb
+        run: |
+          LB_URL=$(kubectl get svc gkorgapp1-dev -n ${{ env.NAMESPACE }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "LoadBalancer: $LB_URL"
+          echo "lb_url=$LB_URL" >> $GITHUB_OUTPUT
+
+      - name: Create DNS Record
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  CREATING DNS RECORD"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          CUSTOM_DOMAIN="${{ github.event.inputs.custom_domain }}"
+          LB_URL="${{ steps.lb.outputs.lb_url }}"
+          ZONE_ID="${{ steps.route53.outputs.zone_id }}"
+          
+          echo "Creating CNAME record:"
+          echo "  Domain: $CUSTOM_DOMAIN"
+          echo "  Target: $LB_URL"
+          echo "  Zone:   $ZONE_ID"
+          
+          # Create change batch JSON
+          cat > /tmp/change-batch.json << EOF
+          {
+            "Changes": [
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$CUSTOM_DOMAIN",
+                  "Type": "CNAME",
+                  "TTL": 300,
+                  "ResourceRecords": [
+                    {
+                      "Value": "$LB_URL"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+          EOF
+          
+          cat /tmp/change-batch.json
+          
+          # Apply the change
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id $ZONE_ID \
+            --change-batch file:///tmp/change-batch.json
+          
+          echo ""
+          echo "✅ DNS record created!"
+
+      - name: Verify DNS Record
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  VERIFYING DNS RECORD"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          ZONE_ID="${{ steps.route53.outputs.zone_id }}"
+          CUSTOM_DOMAIN="${{ github.event.inputs.custom_domain }}"
+          
+          echo "Waiting for DNS propagation..."
+          sleep 10
+          
+          aws route53 list-resource-record-sets --hosted-zone-id $ZONE_ID \
+            --query "ResourceRecordSets[?Name=='${CUSTOM_DOMAIN}.']" --output table
+
+      - name: Test Custom URL
+        run: |
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  TESTING CUSTOM URL"
+          echo "════════════════════════════════════════════════════════════════"
+          
+          CUSTOM_DOMAIN="${{ github.event.inputs.custom_domain }}"
+          
+          echo "Waiting for DNS to propagate (60 seconds)..."
+          sleep 60
+          
+          echo ""
+          echo "Testing: http://$CUSTOM_DOMAIN/health"
+          
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://$CUSTOM_DOMAIN/health" --max-time 10 2>/dev/null || echo "000")
+          
+          if [ "$HTTP_CODE" == "200" ]; then
+            echo "✅ Custom URL is working!"
+            curl -s "http://$CUSTOM_DOMAIN/health"
+          else
+            echo "⏳ DNS still propagating (HTTP code: $HTTP_CODE)"
+            echo "   Try again in a few minutes."
+          fi
+
+      - name: Summary
+        run: |
+          CUSTOM_DOMAIN="${{ github.event.inputs.custom_domain }}"
+          LB_URL="${{ steps.lb.outputs.lb_url }}"
+          
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  🎮 CUSTOM URL CONFIGURED!"
+          echo "════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "  🌐 Custom URL:  http://$CUSTOM_DOMAIN"
+          echo "  🔗 Direct URL:  http://$LB_URL"
+          echo ""
+          echo "  Note: DNS propagation may take 1-5 minutes"
+          echo ""
+          
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## 🎮 Super Mario Task Tracker - Custom URL
+          
+          | Property | Value |
+          |----------|-------|
+          | **Custom URL** | http://$CUSTOM_DOMAIN |
+          | **Direct URL** | http://$LB_URL |
+          | **Health Check** | http://$CUSTOM_DOMAIN/health |
+          
+          > DNS propagation may take 1-5 minutes
+          EOF
