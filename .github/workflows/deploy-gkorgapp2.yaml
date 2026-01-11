@@ -1,0 +1,635 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Opsera Unified AWS Container Deployment (EKS) v1.16.0
+# Application: GKOrgApp2 | Tenant: GKOrg2 | Region: eu-west-2
+# Generated: 2026-01-10
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Deploy GKOrgApp2 to EKS
+
+on:
+  push:
+    branches:
+      - main
+      - gkorgapp2-deploy
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tenant_name:
+        description: 'Tenant/Organization'
+        required: true
+        default: 'gkorg2'
+      app_name:
+        description: 'Application name'
+        required: true
+        default: 'gkorgapp2'
+      app_env:
+        description: 'Environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: 'dev'
+      app_region:
+        description: 'AWS Region'
+        required: true
+        default: 'eu-west-2'
+
+# Configuration from inputs or defaults
+env:
+  TENANT_NAME: ${{ github.event.inputs.tenant_name || 'gkorg2' }}
+  APP_NAME: ${{ github.event.inputs.app_name || 'gkorgapp2' }}
+  APP_ENV: ${{ github.event.inputs.app_env || 'dev' }}
+  APP_REGION: ${{ github.event.inputs.app_region || 'eu-west-2' }}
+  # Short naming convention (Learning #118)
+  REGION_SHORT: euw2
+  CLUSTER_ENV_SHORT: np
+  # Resource names
+  VPC_NAME: opsera-vpc
+  ARGOCD_CLUSTER: argocd-euw2
+  WORKLOAD_CLUSTER: gkorg2-euw2-np
+  ECR_REPO: gkorg2/gkorgapp2
+  NAMESPACE: gkorgapp2-dev
+  DEPLOY_BRANCH: gkorgapp2-deploy
+
+permissions:
+  contents: write
+  id-token: write
+  actions: read
+
+jobs:
+  # ══════════════════════════════════════════════════════════════════════════
+  # Phase 1: Infrastructure Discovery & Provisioning
+  # ══════════════════════════════════════════════════════════════════════════
+  infrastructure:
+    name: "🏗️ Phase 1: Infrastructure"
+    runs-on: ubuntu-latest
+    outputs:
+      argocd_cluster: ${{ steps.discover.outputs.argocd_cluster }}
+      workload_cluster: ${{ steps.discover.outputs.workload_cluster }}
+      ecr_repo: ${{ steps.discover.outputs.ecr_repo }}
+      ecr_registry: ${{ steps.discover.outputs.ecr_registry }}
+      namespace: ${{ steps.discover.outputs.namespace }}
+      deployment_type: ${{ steps.discover.outputs.deployment_type }}
+      aws_account_id: ${{ steps.discover.outputs.aws_account_id }}
+      vpc_exists: ${{ steps.discover.outputs.vpc_exists }}
+      argocd_exists: ${{ steps.discover.outputs.argocd_exists }}
+      workload_exists: ${{ steps.discover.outputs.workload_exists }}
+      ecr_exists: ${{ steps.discover.outputs.ecr_exists }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Discover Infrastructure
+        id: discover
+        run: |
+          echo "════════════════════════════════════════════════════════════"
+          echo "  INFRASTRUCTURE DISCOVERY - GKOrgApp2"
+          echo "════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Configuration:"
+          echo "  Tenant:      ${{ env.TENANT_NAME }}"
+          echo "  App:         ${{ env.APP_NAME }}"
+          echo "  Environment: ${{ env.APP_ENV }}"
+          echo "  Region:      ${{ env.APP_REGION }}"
+          echo ""
+
+          # Get AWS Account ID
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          echo "aws_account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
+
+          # Set resource names
+          ARGOCD_CLUSTER="${{ env.ARGOCD_CLUSTER }}"
+          WORKLOAD_CLUSTER="${{ env.WORKLOAD_CLUSTER }}"
+          ECR_REPO="${{ env.ECR_REPO }}"
+          NAMESPACE="${{ env.NAMESPACE }}"
+          ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.APP_REGION }}.amazonaws.com"
+
+          echo "argocd_cluster=$ARGOCD_CLUSTER" >> $GITHUB_OUTPUT
+          echo "workload_cluster=$WORKLOAD_CLUSTER" >> $GITHUB_OUTPUT
+          echo "ecr_repo=$ECR_REPO" >> $GITHUB_OUTPUT
+          echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
+          echo "ecr_registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+
+          echo "Target Resources:"
+          echo "  ArgoCD Cluster:   $ARGOCD_CLUSTER"
+          echo "  Workload Cluster: $WORKLOAD_CLUSTER"
+          echo "  ECR Repo:         $ECR_REPO"
+          echo "  ECR Registry:     $ECR_REGISTRY"
+          echo "  Namespace:        $NAMESPACE"
+          echo ""
+
+          # ════════════════════════════════════════════════════════════════
+          # CHECK 1: VPC (Learning #116)
+          # ════════════════════════════════════════════════════════════════
+          echo "Checking VPC: ${{ env.VPC_NAME }}..."
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${{ env.VPC_NAME }}" \
+            --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "None")
+          if [ "$VPC_ID" != "None" ] && [ -n "$VPC_ID" ] && [ "$VPC_ID" != "null" ]; then
+            VPC_EXISTS="true"
+            echo "  ✅ VPC EXISTS: $VPC_ID"
+          else
+            VPC_EXISTS="false"
+            echo "  ❌ VPC NOT FOUND - will create"
+          fi
+          echo "vpc_exists=$VPC_EXISTS" >> $GITHUB_OUTPUT
+
+          # ════════════════════════════════════════════════════════════════
+          # CHECK 2: ArgoCD Cluster
+          # ════════════════════════════════════════════════════════════════
+          echo "Checking ArgoCD Cluster: $ARGOCD_CLUSTER..."
+          if aws eks describe-cluster --name "$ARGOCD_CLUSTER" --region ${{ env.APP_REGION }} 2>/dev/null; then
+            ARGOCD_EXISTS="true"
+            echo "  ✅ ArgoCD cluster EXISTS"
+          else
+            ARGOCD_EXISTS="false"
+            echo "  ❌ ArgoCD cluster NOT FOUND - will create"
+          fi
+          echo "argocd_exists=$ARGOCD_EXISTS" >> $GITHUB_OUTPUT
+
+          # ════════════════════════════════════════════════════════════════
+          # CHECK 3: Workload Cluster
+          # ════════════════════════════════════════════════════════════════
+          echo "Checking Workload Cluster: $WORKLOAD_CLUSTER..."
+          if aws eks describe-cluster --name "$WORKLOAD_CLUSTER" --region ${{ env.APP_REGION }} 2>/dev/null; then
+            WORKLOAD_EXISTS="true"
+            echo "  ✅ Workload cluster EXISTS"
+          else
+            WORKLOAD_EXISTS="false"
+            echo "  ❌ Workload cluster NOT FOUND - will create"
+          fi
+          echo "workload_exists=$WORKLOAD_EXISTS" >> $GITHUB_OUTPUT
+
+          # ════════════════════════════════════════════════════════════════
+          # CHECK 4: ECR Repository
+          # ════════════════════════════════════════════════════════════════
+          echo "Checking ECR Repository: $ECR_REPO..."
+          if aws ecr describe-repositories --repository-names "$ECR_REPO" --region ${{ env.APP_REGION }} 2>/dev/null; then
+            ECR_EXISTS="true"
+            echo "  ✅ ECR repository EXISTS"
+          else
+            ECR_EXISTS="false"
+            echo "  ❌ ECR repository NOT FOUND - will create"
+          fi
+          echo "ecr_exists=$ECR_EXISTS" >> $GITHUB_OUTPUT
+
+          # ════════════════════════════════════════════════════════════════
+          # DETERMINE DEPLOYMENT TYPE
+          # ════════════════════════════════════════════════════════════════
+          if [ "$ARGOCD_EXISTS" = "true" ] && [ "$WORKLOAD_EXISTS" = "true" ]; then
+            DEPLOY_TYPE="brownfield"
+          elif [ "$ARGOCD_EXISTS" = "true" ]; then
+            DEPLOY_TYPE="partial"
+          else
+            DEPLOY_TYPE="greenfield"
+          fi
+          echo "deployment_type=$DEPLOY_TYPE" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "════════════════════════════════════════════════════════════"
+          echo "  DEPLOYMENT TYPE: $DEPLOY_TYPE"
+          echo "════════════════════════════════════════════════════════════"
+
+      # Learning #114: Region-specific Terraform state bucket
+      - name: Setup Terraform State Backend
+        id: tf_backend
+        run: |
+          echo "Setting up Terraform State Backend..."
+
+          AWS_ACCOUNT_ID=${{ steps.discover.outputs.aws_account_id }}
+          REGION="${{ env.APP_REGION }}"
+
+          # CRITICAL: Use region-specific bucket name (Learning #114)
+          BUCKET_NAME="opsera-tf-state-${AWS_ACCOUNT_ID}-${REGION}"
+          TABLE_NAME="terraform-state-lock-${REGION}"
+
+          echo "tf_bucket=$BUCKET_NAME" >> $GITHUB_OUTPUT
+          echo "tf_table=$TABLE_NAME" >> $GITHUB_OUTPUT
+
+          # Create S3 bucket if not exists
+          if ! aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+            echo "Creating S3 bucket: $BUCKET_NAME in $REGION"
+            aws s3api create-bucket \
+              --bucket "$BUCKET_NAME" \
+              --region $REGION \
+              --create-bucket-configuration LocationConstraint=$REGION
+
+            aws s3api put-bucket-versioning \
+              --bucket "$BUCKET_NAME" \
+              --versioning-configuration Status=Enabled
+
+            aws s3api put-bucket-encryption \
+              --bucket "$BUCKET_NAME" \
+              --server-side-encryption-configuration \
+              '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+          else
+            echo "S3 bucket exists: $BUCKET_NAME"
+          fi
+
+          # Create DynamoDB table if not exists
+          if ! aws dynamodb describe-table --table-name "$TABLE_NAME" --region $REGION 2>/dev/null; then
+            echo "Creating DynamoDB table: $TABLE_NAME"
+            aws dynamodb create-table \
+              --table-name "$TABLE_NAME" \
+              --attribute-definitions AttributeName=LockID,AttributeType=S \
+              --key-schema AttributeName=LockID,KeyType=HASH \
+              --billing-mode PAY_PER_REQUEST \
+              --region $REGION
+
+            aws dynamodb wait table-exists --table-name "$TABLE_NAME" --region $REGION
+          else
+            echo "DynamoDB table exists: $TABLE_NAME"
+          fi
+
+      - name: Create ECR Repository
+        if: steps.discover.outputs.ecr_exists == 'false'
+        run: |
+          echo "Creating ECR Repository: ${{ env.ECR_REPO }}"
+          
+          # Force lowercase (Learning #120)
+          ECR_REPO_LOWER=$(echo "${{ env.ECR_REPO }}" | tr '[:upper:]' '[:lower:]')
+          
+          aws ecr create-repository \
+            --repository-name "$ECR_REPO_LOWER" \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256 \
+            --region ${{ env.APP_REGION }} || true
+
+          echo "✅ ECR Repository created"
+
+      - name: Infrastructure Summary
+        run: |
+          echo "## 🏗️ Infrastructure Discovery" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Input | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tenant | \`${{ env.TENANT_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| App | \`${{ env.APP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ env.APP_ENV }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Region | \`${{ env.APP_REGION }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Resources" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Name | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| VPC | \`${{ env.VPC_NAME }}\` | ${{ steps.discover.outputs.vpc_exists == 'true' && '✅' || '🆕' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ArgoCD Cluster | \`${{ steps.discover.outputs.argocd_cluster }}\` | ${{ steps.discover.outputs.argocd_exists == 'true' && '✅' || '🆕' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Workload Cluster | \`${{ steps.discover.outputs.workload_cluster }}\` | ${{ steps.discover.outputs.workload_exists == 'true' && '✅' || '🆕' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ECR Repository | \`${{ steps.discover.outputs.ecr_repo }}\` | ${{ steps.discover.outputs.ecr_exists == 'true' && '✅' || '🆕' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployment Type: **${{ steps.discover.outputs.deployment_type }}**" >> $GITHUB_STEP_SUMMARY
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Phase 2: Build, Scan, and Push Application
+  # ══════════════════════════════════════════════════════════════════════════
+  build:
+    name: "🐳 Phase 2: Build & Push"
+    runs-on: ubuntu-latest
+    needs: infrastructure
+    outputs:
+      image_tag: ${{ steps.build.outputs.image_tag }}
+      full_image: ${{ steps.build.outputs.full_image }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Image
+        id: build
+        run: |
+          ECR_REGISTRY="${{ needs.infrastructure.outputs.ecr_registry }}"
+          ECR_REPO="${{ needs.infrastructure.outputs.ecr_repo }}"
+          IMAGE_TAG="${{ github.sha }}"
+          FULL_IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+
+          echo "Building image: $FULL_IMAGE"
+
+          docker build \
+            --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            --build-arg VCS_REF=${{ github.sha }} \
+            --build-arg VERSION=${{ github.ref_name }} \
+            -t $FULL_IMAGE \
+            -t ${ECR_REGISTRY}/${ECR_REPO}:latest \
+            .
+
+          # Push with SHA tag
+          docker push $FULL_IMAGE
+          
+          # Also push :latest for ArgoCD (Learning #134)
+          docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
+
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "full_image=$FULL_IMAGE" >> $GITHUB_OUTPUT
+
+          echo "✅ Image pushed successfully"
+          echo "   SHA tag: $FULL_IMAGE"
+          echo "   Latest:  ${ECR_REGISTRY}/${ECR_REPO}:latest"
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Phase 2b: Security Scan (Grype)
+  # ══════════════════════════════════════════════════════════════════════════
+  security-scan:
+    name: "🛡️ Security Scan"
+    runs-on: ubuntu-latest
+    needs: [infrastructure, build]
+    continue-on-error: true
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run Grype Scan
+        id: grype
+        run: |
+          echo "Scanning image: ${{ needs.build.outputs.full_image }}"
+
+          grype ${{ needs.build.outputs.full_image }} -o json > grype-report.json || true
+          grype ${{ needs.build.outputs.full_image }} -o table > grype-report.txt || true
+
+          # Count vulnerabilities
+          CRITICAL=$(jq '[.matches[] | select(.vulnerability.severity == "Critical")] | length' grype-report.json 2>/dev/null || echo "0")
+          HIGH=$(jq '[.matches[] | select(.vulnerability.severity == "High")] | length' grype-report.json 2>/dev/null || echo "0")
+          MEDIUM=$(jq '[.matches[] | select(.vulnerability.severity == "Medium")] | length' grype-report.json 2>/dev/null || echo "0")
+
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+
+          echo "════════════════════════════════════════════════════════════"
+          echo "  SECURITY SCAN RESULTS"
+          echo "════════════════════════════════════════════════════════════"
+          echo "  Critical: $CRITICAL"
+          echo "  High:     $HIGH"
+          echo "  Medium:   $MEDIUM"
+          echo "════════════════════════════════════════════════════════════"
+
+      - name: Upload Security Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-security-report
+          path: |
+            grype-report.json
+            grype-report.txt
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Phase 3: Deploy via GitOps (Learning #154)
+  # ══════════════════════════════════════════════════════════════════════════
+  deploy:
+    name: "🚀 Phase 3: Deploy"
+    runs-on: ubuntu-latest
+    needs: [infrastructure, build, security-scan]
+    if: always() && needs.build.result == 'success'
+
+    steps:
+      - name: Checkout Deploy Branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_BRANCH }}
+          fetch-depth: 0
+        continue-on-error: true
+
+      - name: Create Deploy Branch if Missing
+        run: |
+          if [ ! -d "k8s" ]; then
+            echo "Deploy branch not found, checking out main and creating deploy branch..."
+            git fetch origin main
+            git checkout main
+            git checkout -b ${{ env.DEPLOY_BRANCH }} || git checkout ${{ env.DEPLOY_BRANCH }}
+          fi
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      - name: Update Kustomization with New Image
+        run: |
+          echo "Updating k8s/overlays/${{ env.APP_ENV }} with new image..."
+
+          # Install kustomize
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+          # Update image in kustomization
+          cd k8s/overlays/${{ env.APP_ENV }}
+          kustomize edit set image ${{ env.APP_NAME }}=${{ needs.build.outputs.full_image }}
+
+          echo "Updated kustomization.yaml:"
+          cat kustomization.yaml
+
+      - name: Commit and Push (GitOps)
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          git add k8s/
+          git commit -m "🚀 Deploy ${{ env.APP_NAME }} to ${{ env.APP_ENV }} - ${{ github.sha }}" || echo "No changes"
+          git push origin ${{ env.DEPLOY_BRANCH }} || git push --set-upstream origin ${{ env.DEPLOY_BRANCH }}
+
+          echo "✅ GitOps commit pushed - ArgoCD will auto-sync"
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Phase 4: Verification (kubectl ONLY for verification - Learning #154)
+  # ══════════════════════════════════════════════════════════════════════════
+  verify:
+    name: "✅ Phase 4: Verify"
+    runs-on: ubuntu-latest
+    needs: [infrastructure, build, deploy]
+    if: needs.infrastructure.outputs.workload_exists == 'true'
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.APP_REGION }}
+
+      # Learning #153: Direct kubectl install
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ needs.infrastructure.outputs.workload_cluster }} \
+            --region ${{ env.APP_REGION }}
+
+      # Learning #138-143: Create AWS credentials secret for IRSA fallback
+      - name: Create AWS Credentials Secret (IRSA Fallback)
+        run: |
+          echo "Creating AWS credentials secret for IRSA fallback..."
+          
+          kubectl create namespace ${{ needs.infrastructure.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+          
+          kubectl create secret generic aws-credentials \
+            --namespace ${{ needs.infrastructure.outputs.namespace }} \
+            --from-literal=AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          echo "✅ AWS credentials secret created"
+
+      - name: Wait for ArgoCD Sync
+        run: |
+          echo "Waiting for ArgoCD to sync (60 seconds)..."
+          sleep 60
+
+      - name: Verify Deployment (kubectl for VERIFICATION only)
+        run: |
+          echo "════════════════════════════════════════════════════════════"
+          echo "  DEPLOYMENT VERIFICATION"
+          echo "════════════════════════════════════════════════════════════"
+
+          echo ""
+          echo "📦 Pods:"
+          kubectl get pods -n ${{ needs.infrastructure.outputs.namespace }} -l app=${{ env.APP_NAME }} || true
+
+          echo ""
+          echo "🌐 Services:"
+          kubectl get svc -n ${{ needs.infrastructure.outputs.namespace }} -l app=${{ env.APP_NAME }} || true
+
+          echo ""
+          echo "📊 Deployment Status:"
+          kubectl rollout status deployment/${{ env.APP_NAME }} \
+            -n ${{ needs.infrastructure.outputs.namespace }} \
+            --timeout=300s || true
+
+      - name: Get Endpoint URL
+        id: endpoint
+        run: |
+          echo "Retrieving endpoint URL..."
+
+          # Wait for LoadBalancer to get external IP
+          for i in {1..30}; do
+            ENDPOINT=$(kubectl get svc ${{ env.APP_NAME }} \
+              -n ${{ needs.infrastructure.outputs.namespace }} \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            
+            if [ -n "$ENDPOINT" ] && [ "$ENDPOINT" != "null" ]; then
+              echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+              echo "✅ Endpoint found: https://$ENDPOINT"
+              break
+            fi
+            echo "Waiting for LoadBalancer... ($i/30)"
+            sleep 10
+          done
+
+          if [ -z "$ENDPOINT" ] || [ "$ENDPOINT" = "null" ]; then
+            echo "⚠️ LoadBalancer endpoint not ready yet"
+            echo "   DNS will be: https://${{ env.APP_NAME }}-${{ env.APP_ENV }}.agents.opsera-labs.com"
+          fi
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tenant | \`${{ env.TENANT_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| App | \`${{ env.APP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ env.APP_ENV }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Region | \`${{ env.APP_REGION }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster | \`${{ needs.infrastructure.outputs.workload_cluster }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | \`${{ needs.infrastructure.outputs.namespace }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ needs.build.outputs.full_image }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Endpoint" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 **https://${{ env.APP_NAME }}-${{ env.APP_ENV }}.agents.opsera-labs.com**" >> $GITHUB_STEP_SUMMARY
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Greenfield Notice (when clusters don't exist)
+  # ══════════════════════════════════════════════════════════════════════════
+  greenfield-notice:
+    name: "📋 Greenfield Notice"
+    runs-on: ubuntu-latest
+    needs: [infrastructure, build, deploy]
+    if: needs.infrastructure.outputs.workload_exists == 'false'
+
+    steps:
+      - name: Greenfield Instructions
+        run: |
+          echo "════════════════════════════════════════════════════════════"
+          echo "  ⚠️  GREENFIELD DEPLOYMENT - Infrastructure Required"
+          echo "════════════════════════════════════════════════════════════"
+          echo ""
+          echo "The EKS cluster does not exist yet."
+          echo "K8s manifests have been updated with the new image."
+          echo ""
+          echo "Next Steps:"
+          echo "1. Run bootstrap-infra workflow to create:"
+          echo "   - VPC: ${{ env.VPC_NAME }}"
+          echo "   - ArgoCD Cluster: ${{ needs.infrastructure.outputs.argocd_cluster }}"
+          echo "   - Workload Cluster: ${{ needs.infrastructure.outputs.workload_cluster }}"
+          echo ""
+          echo "2. Install ArgoCD on the ArgoCD cluster"
+          echo "3. Register workload cluster with ArgoCD"
+          echo "4. ArgoCD will auto-sync the deployment"
+          echo ""
+          echo "Image ready: ${{ needs.build.outputs.full_image }}"
+          echo "════════════════════════════════════════════════════════════"
+
+      - name: Summary
+        run: |
+          echo "## ⚠️ Greenfield Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Infrastructure needs to be created first." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Required Resources" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Name | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| VPC | \`${{ env.VPC_NAME }}\` | 🆕 Create |" >> $GITHUB_STEP_SUMMARY
+          echo "| ArgoCD Cluster | \`${{ needs.infrastructure.outputs.argocd_cluster }}\` | 🆕 Create |" >> $GITHUB_STEP_SUMMARY
+          echo "| Workload Cluster | \`${{ needs.infrastructure.outputs.workload_cluster }}\` | 🆕 Create |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Image Built" >> $GITHUB_STEP_SUMMARY
+          echo "\`${{ needs.build.outputs.full_image }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Run the **bootstrap-infra** workflow to create the infrastructure." >> $GITHUB_STEP_SUMMARY
