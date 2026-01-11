@@ -7,37 +7,37 @@ metadata:
 namespace: gkorgapp2-dev
 
 resources:
-  - ../../base
+- ../../base
 
 commonLabels:
   environment: dev
 
 # Image configuration - updated by CI/CD pipeline
 images:
-  - name: gkorgapp2
-    newName: ACCOUNT_ID.dkr.ecr.eu-west-2.amazonaws.com/gkorg2/gkorgapp2
-    newTag: latest
+- name: gkorgapp2
+  newName: 792373136340.dkr.ecr.eu-west-2.amazonaws.com/gkorg2/gkorgapp2
+  newTag: 105b94e79b8f4d05d27850e60211cb07c7df1a5f
 
 # Dev environment patches
-patches:
-  - target:
-      kind: Deployment
-      name: gkorgapp2
-    patch: |-
-      - op: replace
-        path: /spec/replicas
-        value: 1
-      - op: replace
-        path: /spec/template/spec/containers/0/resources/requests/memory
-        value: "128Mi"
-      - op: replace
-        path: /spec/template/spec/containers/0/resources/limits/memory
-        value: "256Mi"
 
-  - target:
-      kind: Service
-      name: gkorgapp2
-    patch: |-
-      - op: replace
-        path: /metadata/annotations/external-dns.alpha.kubernetes.io~1hostname
-        value: gkorgapp2-dev.agents.opsera-labs.com
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 1
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/requests/memory
+      value: "128Mi"
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/limits/memory
+      value: "256Mi"
+  target:
+    kind: Deployment
+    name: gkorgapp2
+- patch: |-
+    - op: replace
+      path: /metadata/annotations/external-dns.alpha.kubernetes.io~1hostname
+      value: gkorgapp2-dev.agents.opsera-labs.com
+  target:
+    kind: Service
+    name: gkorgapp2
