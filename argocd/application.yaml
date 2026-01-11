@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gkorgapp2-dev
+  namespace: argocd
+  labels:
+    app: gkorgapp2
+    tenant: gkorg2
+    environment: dev
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: gkorg2
+  
+  source:
+    repoURL: https://github.com/GKanchinadham/supermario.git
+    targetRevision: gkorgapp2-deploy
+    path: k8s/overlays/dev
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gkorgapp2-dev
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  
+  # Health checks
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

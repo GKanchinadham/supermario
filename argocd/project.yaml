@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: gkorg2
+  namespace: argocd
+  labels:
+    tenant: gkorg2
+spec:
+  description: GKOrg2 tenant project for ArgoCD applications
+
+  # Source repositories
+  sourceRepos:
+    - https://github.com/GKanchinadham/supermario.git
+    - https://github.com/GKanchinadham/*
+
+  # Destination clusters and namespaces
+  destinations:
+    - namespace: gkorgapp2-*
+      server: https://kubernetes.default.svc
+    - namespace: gkorg2-*
+      server: https://kubernetes.default.svc
+
+  # Cluster resource whitelist
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+
+  # Namespace resource blacklist (deny dangerous resources)
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+
+  # Orphaned resources monitoring
+  orphanedResources:
+    warn: true

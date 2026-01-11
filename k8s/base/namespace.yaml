@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gkorgapp2-dev
+  labels:
+    app: gkorgapp2
+    tenant: gkorg2
+    environment: dev
+    managed-by: argocd
