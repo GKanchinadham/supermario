@@ -16,7 +16,7 @@ commonLabels:
 images:
 - name: gkorgapp2
   newName: 792373136340.dkr.ecr.eu-west-2.amazonaws.com/gkorg2/gkorgapp2
-  newTag: 42afcd1adc57f93e9a45fc8e07f1ce5cb1233263
+  newTag: 87c1c05d30d868a35b70dac502e73b27a7ed6c16
 
 # Dev environment patches
 
