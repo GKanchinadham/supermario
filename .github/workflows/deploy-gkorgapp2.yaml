@@ -625,7 +625,7 @@ jobs:
 
       - name: Create DNS Record (ExternalDNS Fallback)
         run: |
-          echo "Creating Route53 DNS record as fallback..."
+          echo "Creating Route53 DNS record..."
           
           HOSTNAME="${{ env.APP_NAME }}-${{ env.APP_ENV }}.agents.opsera-labs.com"
           NLB_DNS=$(kubectl get svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} \
@@ -641,19 +641,46 @@ jobs:
           
           if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "None" ]; then
             echo "⚠️ Hosted zone for agents.opsera-labs.com not found"
-            echo "   Using NLB direct URL instead"
             exit 0
           fi
           
-          echo "Found hosted zone: $ZONE_ID"
-          echo "Creating CNAME record: $HOSTNAME -> $NLB_DNS"
+          echo "Hosted zone: $ZONE_ID"
+          echo "Target: $HOSTNAME -> $NLB_DNS"
           
-          # Create CNAME record (simpler than ALIAS for NLB)
+          # First, delete any existing A or CNAME records for this hostname
+          for TYPE in A CNAME TXT; do
+            EXISTING=$(aws route53 list-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+              --query "ResourceRecordSets[?Name=='${HOSTNAME}.' && Type=='${TYPE}']" --output json 2>/dev/null)
+            
+            if [ "$EXISTING" != "[]" ] && [ -n "$EXISTING" ]; then
+              echo "Deleting existing $TYPE record..."
+              RECORD_VALUE=$(echo "$EXISTING" | jq -r '.[0].ResourceRecords[0].Value // empty')
+              TTL=$(echo "$EXISTING" | jq -r '.[0].TTL // 300')
+              
+              if [ -n "$RECORD_VALUE" ]; then
+                aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+                  --change-batch "{
+                    \"Changes\": [{
+                      \"Action\": \"DELETE\",
+                      \"ResourceRecordSet\": {
+                        \"Name\": \"$HOSTNAME\",
+                        \"Type\": \"$TYPE\",
+                        \"TTL\": $TTL,
+                        \"ResourceRecords\": [{\"Value\": \"$RECORD_VALUE\"}]
+                      }
+                    }]
+                  }" 2>/dev/null || true
+              fi
+            fi
+          done
+          
+          # Create fresh CNAME record
+          echo "Creating CNAME record..."
           aws route53 change-resource-record-sets \
             --hosted-zone-id "$ZONE_ID" \
             --change-batch "{
               \"Changes\": [{
-                \"Action\": \"UPSERT\",
+                \"Action\": \"CREATE\",
                 \"ResourceRecordSet\": {
                   \"Name\": \"$HOSTNAME\",
                   \"Type\": \"CNAME\",
@@ -661,9 +688,7 @@ jobs:
                   \"ResourceRecords\": [{\"Value\": \"$NLB_DNS\"}]
                 }
               }]
-            }" || echo "DNS record creation failed - may already exist or permission issue"
-          
-          echo "✅ DNS record created/updated: $HOSTNAME"
+            }" && echo "✅ DNS record created: $HOSTNAME" || echo "⚠️ DNS creation issue"
 
       - name: Deployment Summary
         run: |
