@@ -18,7 +18,8 @@ spec:
     path: k8s/overlays/dev
   
   destination:
-    server: https://kubernetes.default.svc
+    # Use cluster name registered in ArgoCD (not default.svc which is ArgoCD cluster)
+    name: gkorg2-euw2-np
     namespace: gkorgapp2-dev
   
   syncPolicy:
