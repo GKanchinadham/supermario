@@ -542,6 +542,31 @@ jobs:
             echo "✅ Deployment exists - ArgoCD sync successful"
           fi
 
+      - name: Configure HTTPS with ACM Certificate
+        run: |
+          echo "Configuring HTTPS with ACM certificate..."
+          
+          # Find ACM certificate for the domain
+          DOMAIN="agents.opsera-labs.com"
+          CERT_ARN=$(aws acm list-certificates --region ${{ env.APP_REGION }} \
+            --query "CertificateSummaryList[?contains(DomainName, '${DOMAIN}') || DomainName=='*.${DOMAIN}'].CertificateArn" \
+            --output text | head -1)
+          
+          if [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ]; then
+            echo "✅ Found ACM certificate: $CERT_ARN"
+            
+            # Patch the service with the SSL certificate annotation
+            kubectl patch svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} \
+              --type='json' \
+              -p='[{"op": "add", "path": "/metadata/annotations/service.beta.kubernetes.io~1aws-load-balancer-ssl-cert", "value": "'$CERT_ARN'"}]' || true
+            
+            echo "✅ Service patched with SSL certificate"
+          else
+            echo "⚠️ No ACM certificate found for $DOMAIN"
+            echo "   To enable HTTPS, create a certificate in ACM for *.agents.opsera-labs.com"
+            echo "   Then re-run this workflow"
+          fi
+
       - name: Wait for Deployment Rollout
         run: |
           echo "Waiting for deployment to roll out..."
