@@ -146,11 +146,8 @@ module "oidc_workload" {
   depends_on = [module.eks_workload]
 }
 
-module "ecr" {
-  source = "./modules/ecr"
-  
-  repository_name = "gkorg2/gkorgapp2"
-}
+# NOTE: ECR is managed by the deploy-gkorgapp2 workflow, not Terraform
+# This avoids conflicts when the repo already exists
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Outputs
@@ -169,9 +166,4 @@ output "argocd_cluster_endpoint" {
 output "workload_cluster_endpoint" {
   description = "Workload EKS cluster endpoint"
   value       = module.eks_workload.cluster_endpoint
-}
-
-output "ecr_repository_url" {
-  description = "ECR repository URL"
-  value       = module.ecr.repository_url
 }
