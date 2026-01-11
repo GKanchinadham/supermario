@@ -12,7 +12,8 @@ metadata:
     service.beta.kubernetes.io/aws-load-balancer-type: nlb
     service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
     service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
-    # HTTPS with ACM certificate (Learning #135)
+    # HTTPS with ACM certificate
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws:acm:eu-west-2:792373136340:certificate/295d69b5-2d5a-4c44-a3d3-bd35170e36ab
     service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
     service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
 spec:

@@ -542,29 +542,31 @@ jobs:
             echo "✅ Deployment exists - ArgoCD sync successful"
           fi
 
-      - name: Configure HTTPS with ACM Certificate
+      - name: Recreate Service for SSL (if needed)
         run: |
-          echo "Configuring HTTPS with ACM certificate..."
+          echo "Checking if service needs recreation for SSL..."
           
-          # Find ACM certificate for the domain
-          DOMAIN="agents.opsera-labs.com"
-          CERT_ARN=$(aws acm list-certificates --region ${{ env.APP_REGION }} \
-            --query "CertificateSummaryList[?contains(DomainName, '${DOMAIN}') || DomainName=='*.${DOMAIN}'].CertificateArn" \
-            --output text | head -1)
+          # Check if service has SSL certificate annotation
+          CURRENT_CERT=$(kubectl get svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} \
+            -o jsonpath='{.metadata.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-ssl-cert}' 2>/dev/null || echo "")
           
-          if [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ]; then
-            echo "✅ Found ACM certificate: $CERT_ARN"
+          if [ -z "$CURRENT_CERT" ] || [ "$CURRENT_CERT" = "null" ]; then
+            echo "⚠️ Service missing SSL cert - recreating for HTTPS support..."
             
-            # Patch the service with the SSL certificate annotation
-            kubectl patch svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} \
-              --type='json' \
-              -p='[{"op": "add", "path": "/metadata/annotations/service.beta.kubernetes.io~1aws-load-balancer-ssl-cert", "value": "'$CERT_ARN'"}]' || true
+            # Delete existing service (NLB will be recreated)
+            kubectl delete svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} --ignore-not-found=true
             
-            echo "✅ Service patched with SSL certificate"
+            echo "⏳ Waiting 10s for cleanup..."
+            sleep 10
+            
+            # Reapply the service with SSL annotation from manifests
+            kustomize build k8s/overlays/${{ env.APP_ENV }} | kubectl apply -f -
+            
+            echo "✅ Service recreated with SSL certificate"
+            echo "⏳ Waiting 60s for NLB provisioning..."
+            sleep 60
           else
-            echo "⚠️ No ACM certificate found for $DOMAIN"
-            echo "   To enable HTTPS, create a certificate in ACM for *.agents.opsera-labs.com"
-            echo "   Then re-run this workflow"
+            echo "✅ Service already has SSL certificate: $CURRENT_CERT"
           fi
 
       - name: Wait for Deployment Rollout
