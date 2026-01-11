@@ -52,7 +52,8 @@ env:
   ARGOCD_CLUSTER: argocd-euw2
   WORKLOAD_CLUSTER: gkorg2-euw2-np
   ECR_REPO: gkorg2/gkorgapp2
-  NAMESPACE: gkorgapp2-dev
+  # Dynamic namespace based on environment
+  NAMESPACE: gkorgapp2-${{ github.event.inputs.app_env || 'dev' }}
   DEPLOY_BRANCH: gkorgapp2-deploy
 
 permissions:
