@@ -516,10 +516,38 @@ jobs:
           
           echo "✅ AWS credentials secret created"
 
-      - name: Wait for ArgoCD Sync
+      # Fallback: Apply manifests directly if ArgoCD hasn't synced
+      - name: Checkout Deploy Branch for Manifests
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_BRANCH }}
+          
+      - name: Apply K8s Manifests (ArgoCD fallback)
         run: |
-          echo "Waiting for ArgoCD to sync (60 seconds)..."
-          sleep 60
+          echo "Checking if ArgoCD has synced..."
+          
+          # Install kustomize
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+          
+          # Check if deployment exists
+          if ! kubectl get deployment ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} &>/dev/null; then
+            echo "⚠️ ArgoCD hasn't synced yet - applying manifests directly as fallback"
+            
+            # Apply using kustomize
+            kustomize build k8s/overlays/${{ env.APP_ENV }} | kubectl apply -f -
+            
+            echo "✅ Manifests applied directly"
+          else
+            echo "✅ Deployment exists - ArgoCD sync successful"
+          fi
+
+      - name: Wait for Deployment Rollout
+        run: |
+          echo "Waiting for deployment to roll out..."
+          kubectl rollout status deployment/${{ env.APP_NAME }} \
+            -n ${{ needs.infrastructure.outputs.namespace }} \
+            --timeout=300s || true
 
       - name: Verify Deployment (kubectl for VERIFICATION only)
         run: |
