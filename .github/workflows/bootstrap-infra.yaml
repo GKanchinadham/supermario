@@ -258,9 +258,23 @@ jobs:
             --name ${{ env.WORKLOAD_CLUSTER }} \
             --region ${{ env.APP_REGION }}
 
-      - name: Create ExternalDNS IAM Policy
+      - name: Setup IRSA for ExternalDNS
+        id: irsa
         run: |
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          CLUSTER_NAME="${{ env.WORKLOAD_CLUSTER }}"
+          ROLE_NAME="ExternalDNS-${CLUSTER_NAME}"
+          POLICY_NAME="ExternalDNS-${CLUSTER_NAME}"
+          
+          echo "account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "role_name=$ROLE_NAME" >> $GITHUB_OUTPUT
+          
+          # Get OIDC provider URL
+          OIDC_URL=$(aws eks describe-cluster --name $CLUSTER_NAME \
+            --query 'cluster.identity.oidc.issuer' --output text)
+          OIDC_PROVIDER=$(echo $OIDC_URL | sed 's|https://||')
+          
+          echo "OIDC Provider: $OIDC_PROVIDER"
           
           # Create IAM policy for ExternalDNS (Learning #156 - include all zones)
           cat > /tmp/externaldns-policy.json << 'EOF'
@@ -283,22 +297,69 @@ jobs:
             ]
           }
           EOF
-
-          POLICY_NAME="ExternalDNS-${{ env.WORKLOAD_CLUSTER }}"
           
-          # Create or update policy
-          if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${POLICY_NAME}" 2>/dev/null; then
-            echo "Policy exists, skipping creation"
-          else
+          # Create policy if not exists
+          POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${POLICY_NAME}"
+          if ! aws iam get-policy --policy-arn "$POLICY_ARN" 2>/dev/null; then
             aws iam create-policy \
               --policy-name "$POLICY_NAME" \
               --policy-document file:///tmp/externaldns-policy.json
+            echo "✅ IAM Policy created"
+          else
+            echo "✅ IAM Policy exists"
           fi
+          
+          # Create trust policy for IRSA
+          cat > /tmp/trust-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OIDC_PROVIDER}:sub": "system:serviceaccount:kube-system:external-dns",
+                    "${OIDC_PROVIDER}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Create or update IAM role
+          if ! aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
+            aws iam create-role \
+              --role-name "$ROLE_NAME" \
+              --assume-role-policy-document file:///tmp/trust-policy.json
+            
+            aws iam attach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn "$POLICY_ARN"
+            
+            echo "✅ IAM Role created with IRSA trust policy"
+          else
+            # Update trust policy
+            aws iam update-assume-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-document file:///tmp/trust-policy.json
+            echo "✅ IAM Role trust policy updated"
+          fi
+          
+          ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ROLE_NAME}"
+          echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+          echo "Role ARN: $ROLE_ARN"
 
-      - name: Install ExternalDNS via Helm
+      - name: Install ExternalDNS via Helm with IRSA
         run: |
           helm repo add external-dns https://kubernetes-sigs.github.io/external-dns/
           helm repo update
+          
+          ROLE_ARN="${{ steps.irsa.outputs.role_arn }}"
           
           helm upgrade --install external-dns external-dns/external-dns \
             --namespace kube-system \
@@ -307,9 +368,14 @@ jobs:
             --set txtOwnerId=${{ env.WORKLOAD_CLUSTER }} \
             --set policy=sync \
             --set sources[0]=service \
-            --set sources[1]=ingress
+            --set sources[1]=ingress \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ROLE_ARN"
           
-          echo "✅ ExternalDNS installed successfully"
+          # Restart ExternalDNS to pick up new credentials
+          kubectl rollout restart deployment external-dns -n kube-system
+          
+          echo "✅ ExternalDNS installed with IRSA"
+          echo "   Role ARN: $ROLE_ARN"
 
   # ══════════════════════════════════════════════════════════════════════════
   # Register Workload Cluster with ArgoCD
