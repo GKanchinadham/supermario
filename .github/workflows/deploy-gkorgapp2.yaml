@@ -623,7 +623,7 @@ jobs:
             echo "   DNS will be: https://${{ env.APP_NAME }}-${{ env.APP_ENV }}.agents.opsera-labs.com"
           fi
 
-      - name: Create DNS Record (ExternalDNS Fallback)
+      - name: Create DNS Record
         run: |
           echo "Creating Route53 DNS record..."
           
@@ -636,48 +636,33 @@ jobs:
             exit 0
           fi
           
-          # Find the hosted zone for agents.opsera-labs.com
           ZONE_ID=$(aws route53 list-hosted-zones --query "HostedZones[?Name=='agents.opsera-labs.com.'].Id" --output text | sed 's|/hostedzone/||')
           
           if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "None" ]; then
-            echo "⚠️ Hosted zone for agents.opsera-labs.com not found"
+            echo "⚠️ Hosted zone not found"
             exit 0
           fi
           
-          echo "Hosted zone: $ZONE_ID"
-          echo "Target: $HOSTNAME -> $NLB_DNS"
+          echo "Zone: $ZONE_ID"
+          echo "Creating: $HOSTNAME -> $NLB_DNS"
           
-          # First, delete any existing A or CNAME records for this hostname
-          for TYPE in A CNAME TXT; do
-            EXISTING=$(aws route53 list-resource-record-sets --hosted-zone-id "$ZONE_ID" \
-              --query "ResourceRecordSets[?Name=='${HOSTNAME}.' && Type=='${TYPE}']" --output json 2>/dev/null)
-            
-            if [ "$EXISTING" != "[]" ] && [ -n "$EXISTING" ]; then
-              echo "Deleting existing $TYPE record..."
-              RECORD_VALUE=$(echo "$EXISTING" | jq -r '.[0].ResourceRecords[0].Value // empty')
-              TTL=$(echo "$EXISTING" | jq -r '.[0].TTL // 300')
-              
-              if [ -n "$RECORD_VALUE" ]; then
-                aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
-                  --change-batch "{
-                    \"Changes\": [{
-                      \"Action\": \"DELETE\",
-                      \"ResourceRecordSet\": {
-                        \"Name\": \"$HOSTNAME\",
-                        \"Type\": \"$TYPE\",
-                        \"TTL\": $TTL,
-                        \"ResourceRecords\": [{\"Value\": \"$RECORD_VALUE\"}]
-                      }
-                    }]
-                  }" 2>/dev/null || true
-              fi
-            fi
-          done
+          # Delete ALL existing records for this hostname
+          aws route53 list-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+            --query "ResourceRecordSets[?Name=='${HOSTNAME}.']" --output json > /tmp/existing.json
           
-          # Create fresh CNAME record
-          echo "Creating CNAME record..."
-          aws route53 change-resource-record-sets \
-            --hosted-zone-id "$ZONE_ID" \
+          RECORD_COUNT=$(jq length /tmp/existing.json)
+          echo "Found $RECORD_COUNT existing records"
+          
+          if [ "$RECORD_COUNT" != "0" ]; then
+            echo "Deleting all existing records..."
+            CHANGES=$(jq '[.[] | {Action: "DELETE", ResourceRecordSet: .}]' /tmp/existing.json)
+            aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
+              --change-batch "{\"Changes\": $CHANGES}" 2>/dev/null || true
+            sleep 5
+          fi
+          
+          # Create CNAME
+          aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
             --change-batch "{
               \"Changes\": [{
                 \"Action\": \"CREATE\",
@@ -688,7 +673,7 @@ jobs:
                   \"ResourceRecords\": [{\"Value\": \"$NLB_DNS\"}]
                 }
               }]
-            }" && echo "✅ DNS record created: $HOSTNAME" || echo "⚠️ DNS creation issue"
+            }" && echo "✅ DNS: $HOSTNAME" || echo "⚠️ DNS failed"
 
       - name: Deployment Summary
         run: |
