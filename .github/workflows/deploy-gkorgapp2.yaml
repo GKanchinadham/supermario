@@ -542,32 +542,34 @@ jobs:
             echo "✅ Deployment exists - ArgoCD sync successful"
           fi
 
-      - name: Recreate Service for SSL (if needed)
+      - name: Recreate Service for SSL
         run: |
-          echo "Checking if service needs recreation for SSL..."
+          echo "Force recreating service to ensure NLB has SSL termination..."
           
-          # Check if service has SSL certificate annotation
-          CURRENT_CERT=$(kubectl get svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} \
-            -o jsonpath='{.metadata.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-ssl-cert}' 2>/dev/null || echo "")
+          # Get current LoadBalancer hostname before delete
+          OLD_LB=$(kubectl get svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          echo "Current LB: $OLD_LB"
           
-          if [ -z "$CURRENT_CERT" ] || [ "$CURRENT_CERT" = "null" ]; then
-            echo "⚠️ Service missing SSL cert - recreating for HTTPS support..."
-            
-            # Delete existing service (NLB will be recreated)
-            kubectl delete svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} --ignore-not-found=true
-            
-            echo "⏳ Waiting 10s for cleanup..."
-            sleep 10
-            
-            # Reapply the service with SSL annotation from manifests
-            kustomize build k8s/overlays/${{ env.APP_ENV }} | kubectl apply -f -
-            
-            echo "✅ Service recreated with SSL certificate"
-            echo "⏳ Waiting 60s for NLB provisioning..."
-            sleep 60
-          else
-            echo "✅ Service already has SSL certificate: $CURRENT_CERT"
-          fi
+          # Delete existing service (NLB will be recreated with SSL)
+          echo "Deleting service to force NLB recreation..."
+          kubectl delete svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} --ignore-not-found=true
+          
+          echo "⏳ Waiting 15s for NLB cleanup..."
+          sleep 15
+          
+          # Reapply the service with SSL annotation from manifests
+          echo "Reapplying service with SSL certificate..."
+          kustomize build k8s/overlays/${{ env.APP_ENV }} | kubectl apply -f -
+          
+          echo "✅ Service recreated with SSL certificate"
+          echo "⏳ Waiting 90s for new NLB provisioning..."
+          sleep 90
+          
+          # Get new LoadBalancer hostname
+          NEW_LB=$(kubectl get svc ${{ env.APP_NAME }} -n ${{ needs.infrastructure.outputs.namespace }} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "New LB: $NEW_LB"
 
       - name: Wait for Deployment Rollout
         run: |
